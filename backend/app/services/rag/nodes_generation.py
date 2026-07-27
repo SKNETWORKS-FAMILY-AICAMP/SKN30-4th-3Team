@@ -181,7 +181,12 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                 }
             }
         except Exception as exc:
-            logger.warning("OpenAI answer generation failed; using evidence fallback (%s)", type(exc).__name__)
+            logger.warning(
+                "OpenAI answer generation failed; using evidence fallback (model=%s, %s: %s)",
+                os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+                type(exc).__name__,
+                exc,
+            )
             generation_notice = "현재 AI 생성 연결을 확인할 수 없어, 질문과 검색 문서를 바탕으로 한 기본 관찰 가이드를 표시합니다."
     else:
         generation_notice = "AI 생성 설정이 없어, 질문과 검색 문서를 바탕으로 한 기본 관찰 가이드를 표시합니다."
