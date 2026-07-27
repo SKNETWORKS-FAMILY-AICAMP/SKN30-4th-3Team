@@ -10,6 +10,7 @@ const DashboardPage = lazy(() => import("./components/pages/DashboardPage").then
 const AddPlantPage = lazy(() => import("./components/pages/AddPlantPage").then((module) => ({ default: module.AddPlantPage })));
 const PlantDetailPage = lazy(() => import("./components/pages/PlantDetailPage").then((module) => ({ default: module.PlantDetailPage })));
 const ChatPage = lazy(() => import("./components/pages/ChatPage").then((module) => ({ default: module.ChatPage })));
+const GardenPage = lazy(() => import("./components/pages/GardenPage").then((module) => ({ default: module.GardenPage })));
 
 function normalizePage(page: DesignPage): DesignPage {
   if (page === "login") return isDevelopmentMockMode() ? "login" : hasAuthSession() ? "dashboard" : "login";
@@ -93,6 +94,7 @@ export function App() {
           {page === "add" && <AddPlantPage onNavigate={navigate} onAuthError={handlePageError} />}
           {page === "detail" && <PlantDetailPage onNavigate={navigate} onAuthError={handlePageError} />}
           {page === "chat" && <ChatPage onNavigate={navigate} onAuthError={handlePageError} />}
+          {page === "garden" && <GardenPage onNavigate={navigate} onAuthError={handlePageError} />}
         </Suspense>
       </div>
     </AppShell>

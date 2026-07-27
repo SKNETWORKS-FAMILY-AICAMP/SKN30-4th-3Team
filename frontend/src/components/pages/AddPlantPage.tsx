@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createPlant, searchPlantCatalog, uploadPlantPhoto } from "../../api";
+import { createGarden, createPlant, listGardens, searchPlantCatalog, uploadPlantPhoto } from "../../api";
 import type { DesignPage } from "../../lib/constants";
 import { setSelectedPlantId } from "../../lib/storage";
-import type { PlantCatalogItem } from "../../types";
+import type { Garden, PlantCatalogItem } from "../../types";
 
 interface AddPlantPageProps {
   onNavigate: (page: DesignPage) => void;
@@ -20,6 +20,9 @@ export function AddPlantPage({ onNavigate, onAuthError }: AddPlantPageProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
+  const [gardens, setGardens] = useState<Garden[]>([]);
+  const [gardenChoice, setGardenChoice] = useState(""); // "" = 없음, gardenId, "__new__"
+  const [newGardenName, setNewGardenName] = useState("");
 
   useEffect(() => {
     if (!photo) {
@@ -30,6 +33,20 @@ export function AddPlantPage({ onNavigate, onAuthError }: AddPlantPageProps) {
     setPreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [photo]);
+
+  useEffect(() => {
+    let active = true;
+    listGardens()
+      .then((rows) => {
+        if (active) setGardens(rows);
+      })
+      .catch(() => {
+        /* 텃밭을 불러오지 못해도 식물 등록은 계속 진행 가능 */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (species.trim().length < 2) {
@@ -65,11 +82,27 @@ export function AddPlantPage({ onNavigate, onAuthError }: AddPlantPageProps) {
     setSubmitting(true);
 
     try {
+      let gardenId: string | undefined;
+      if (gardenChoice === "__new__") {
+        const trimmedGarden = newGardenName.trim();
+        if (trimmedGarden) {
+          const garden = await createGarden({
+            name: trimmedGarden,
+            location: location.trim() || undefined,
+            sunlight: sunlight.trim() || undefined
+          });
+          gardenId = garden.id;
+        }
+      } else if (gardenChoice) {
+        gardenId = gardenChoice;
+      }
+
       const plant = await createPlant({
         name: name.trim(),
         species: species.trim() || undefined,
         location: location.trim() || undefined,
-        sunlight: sunlight.trim() || undefined
+        sunlight: sunlight.trim() || undefined,
+        gardenId
       });
 
       if (photo) {
@@ -139,6 +172,22 @@ export function AddPlantPage({ onNavigate, onAuthError }: AddPlantPageProps) {
             <label className="field"><span>식물을 둔 위치</span><input maxLength={80} onChange={(event) => setLocation(event.target.value)} placeholder="예: 거실 남향 창가, 베란다 선반" value={location} /></label>
             <label className="field"><span>빛 환경</span><select onChange={(event) => setSunlight(event.target.value)} value={sunlight}><option value="">선택하지 않음</option><option value="밝은 간접광">밝은 간접광</option><option value="오전 직사광">오전 직사광</option><option value="하루 종일 직사광">하루 종일 직사광</option><option value="빛이 적은 실내">빛이 적은 실내</option></select></label>
           </div>
+
+          <label className="field">
+            <span>텃밭 <small className="field-optional">(선택)</small></span>
+            <select onChange={(event) => setGardenChoice(event.target.value)} value={gardenChoice}>
+              <option value="">텃밭에 넣지 않음</option>
+              {gardens.map((garden) => <option key={garden.id} value={garden.id}>{garden.name}</option>)}
+              <option value="__new__">+ 새 텃밭 만들기</option>
+            </select>
+            <small className="field-hint">여러 작물을 한 구획으로 묶어 함께 관리할 수 있어요.</small>
+          </label>
+          {gardenChoice === "__new__" && (
+            <label className="field">
+              <span>새 텃밭 이름 <b aria-label="필수">*</b></span>
+              <input maxLength={40} onChange={(event) => setNewGardenName(event.target.value)} placeholder="예: 베란다 텃밭" value={newGardenName} />
+            </label>
+          )}
 
           <div className="form-divider" />
           <div className="form-section-heading"><span className="material-symbols-outlined" aria-hidden="true">photo_camera</span><div><h2>첫 관찰 사진</h2><p>지금 모습을 남겨두면 성장 변화를 비교하기 쉬워요.</p></div></div>

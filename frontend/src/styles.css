@@ -306,6 +306,11 @@ p { line-height: 1.7; }
 .task-list li > span:nth-child(2) { display: flex; flex-direction: column; gap: 4px; color: var(--ink); font-size: .85rem; }
 .task-list li > span:nth-child(2) strong { margin-right: 8px; }
 .task-list small { color: var(--muted); font-size: .72rem; }
+.task-marker-water { color: var(--green-700); background: var(--blue-soft); }
+.task-dday { align-self: flex-start; margin-top: 3px; padding: 2px 9px; border-radius: 999px; color: var(--green-800); background: var(--mint-100); font-size: .62rem; font-weight: 750; }
+.task-dday.is-due { color: #8a3d16; background: var(--warning-soft); }
+.task-actions { display: flex; align-items: center; gap: 8px; }
+.task-actions .button-primary .material-symbols-outlined { font-size: 1rem; }
 
 /* Add plant */
 .add-layout { display: grid; grid-template-columns: 310px minmax(0, 1fr); align-items: start; gap: 20px; }
@@ -573,7 +578,7 @@ p { line-height: 1.7; }
   .search-field { width: 100%; }
   .plant-grid, .form-grid { grid-template-columns: 1fr; }
   .task-list li { grid-template-columns: auto 1fr; }
-  .task-list .text-button { grid-column: 2; justify-self: start; padding: 0; }
+  .task-actions { grid-column: 2; justify-self: start; flex-wrap: wrap; }
   .add-guide { grid-template-columns: 92px 1fr; padding: 16px; }
   .add-guide-visual { height: 92px; }
   .register-steps { display: none; }
@@ -619,3 +624,79 @@ p { line-height: 1.7; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ── 내 텃밭 (도메인 확장) ── */
+.garden-page { max-width: 1100px; margin: 0 auto; padding: 28px 24px 40px; }
+.garden-heading { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 22px; }
+.garden-create { margin-bottom: 20px; }
+.garden-empty { padding: 28px; border: 1px dashed var(--line); border-radius: var(--radius-md); color: var(--muted); text-align: center; }
+.garden-heading .eyebrow { color: var(--green-600); font-size: .62rem; font-weight: 800; letter-spacing: .12em; }
+.garden-heading h1 { margin: 6px 0; font-size: 1.7rem; }
+.garden-heading p { max-width: 52ch; margin: 0; color: var(--muted); font-size: .92rem; }
+.garden-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.garden-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-sm); transition: box-shadow .18s ease, transform .18s ease; }
+.garden-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.garden-card-media { display: grid; height: 128px; place-items: center; background: linear-gradient(150deg, var(--mint-100), var(--mint-50)); color: var(--green-700); }
+.garden-card-media img { width: 100%; height: 100%; object-fit: cover; }
+.garden-card-media .material-symbols-outlined { font-size: 3rem; font-variation-settings: "FILL" 1, "wght" 300, "GRAD" 0, "opsz" 48; }
+.garden-card-body { display: flex; flex: 1; flex-direction: column; gap: 8px; padding: 16px; }
+.garden-card-body h2 { margin: 0; font-size: 1.05rem; }
+.garden-card-meta { margin: 0; color: var(--green-700); font-size: .74rem; font-weight: 650; }
+.garden-card-desc { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.55; }
+.garden-card-facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 4px; }
+.garden-card-facts > div { display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: 10px; background: var(--surface-soft); }
+.garden-card-facts dt { color: var(--muted); font-size: .58rem; font-weight: 700; letter-spacing: .04em; }
+.garden-card-facts dd { margin: 0; font-size: .74rem; }
+.garden-card-titlebar { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.garden-card-titlebar h2 { margin: 0; }
+.garden-card-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.garden-card-actions button { padding: 3px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: white; font-size: .64rem; font-weight: 750; cursor: pointer; }
+.garden-card-actions button:hover { color: var(--green-800); background: var(--surface-soft); }
+.garden-card-actions button.is-danger:hover { border-color: rgba(190,62,72,.3); color: var(--danger); background: var(--danger-soft); }
+.garden-card-actions button:disabled { cursor: not-allowed; opacity: .5; }
+.garden-edit { display: flex; flex-direction: column; gap: 10px; }
+.garden-edit .field span { font-size: .64rem; }
+.garden-edit .form-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+.garden-delete-confirm { padding: 11px 12px; border: 1px solid rgba(190,62,72,.24); border-radius: 12px; background: var(--danger-soft); }
+.garden-delete-confirm p { margin: 0 0 9px; color: #7a2e33; font-size: .74rem; line-height: 1.5; }
+.garden-delete-confirm > div { display: flex; justify-content: flex-end; gap: 6px; }
+.garden-delete-confirm button { min-height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: white; font-size: .7rem; font-weight: 750; cursor: pointer; }
+.garden-delete-confirm button.is-danger { border-color: rgba(190,62,72,.3); color: #fff1ef; background: var(--danger); }
+.garden-delete-confirm button:disabled { cursor: wait; opacity: .6; }
+.garden-members { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
+.garden-member-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.garden-member-list li { display: inline-flex; align-items: center; gap: 4px; padding: 4px 5px 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--mint-50); font-size: .72rem; }
+.garden-member-list .material-symbols-outlined { color: var(--green-600); font-size: .9rem; }
+.garden-member-list button { display: grid; width: 17px; height: 17px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 999px; color: var(--muted); background: transparent; font-size: .85rem; line-height: 1; cursor: pointer; }
+.garden-member-list button:hover { color: var(--danger); background: var(--danger-soft); }
+.garden-member-empty { margin: 0; color: var(--muted); font-size: .74rem; }
+.garden-add-plant select { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--green-800); background: var(--surface-soft); font-size: .74rem; font-weight: 650; cursor: pointer; }
+.garden-card-body .button { margin-top: auto; align-self: flex-start; gap: 5px; }
+
+/* ── 병해충 가능성 / 농약 안전 카드 (도메인 확장) ── */
+.pest-list, .pesticide-list { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 8px; padding: 0; list-style: none; }
+.pest-item { padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.pest-item-head { display: flex; align-items: center; gap: 8px; }
+.pest-item-head strong { flex: 1; min-width: 0; font-size: .86rem; }
+.pest-confidence { color: var(--green-700); font-size: .78rem; font-weight: 750; }
+.pest-badge { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; font-size: .6rem; font-weight: 800; letter-spacing: .02em; }
+.pest-badge-disease { color: #8a3d16; background: var(--warning-soft); }
+.pest-badge-pest { color: #7a2e33; background: var(--danger-soft); }
+.pest-badge-unknown { color: var(--muted); background: var(--mint-100); }
+.pest-meter { height: 6px; margin: 8px 0 6px; overflow: hidden; border-radius: 999px; background: var(--mint-100); }
+.pest-meter > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--mint-500), var(--green-600)); }
+.pest-item p { margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+.pest-note, .pesticide-note { margin: 2px 0 0; font-size: .72rem; }
+.pesticide-item { padding: 12px 13px; border: 1px solid rgba(190,62,72,.22); border-radius: 12px; background: var(--danger-soft); }
+.pesticide-head { display: flex; align-items: baseline; gap: 8px; }
+.pesticide-head strong { flex: 1; font-size: .88rem; }
+.pesticide-regno { flex: 0 0 auto; color: var(--muted); font-size: .62rem; font-weight: 700; }
+.pesticide-target { margin: 6px 0 8px; color: var(--ink); font-size: .78rem; line-height: 1.5; }
+.pesticide-facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+.pesticide-facts > div { display: flex; flex-direction: column; gap: 1px; padding: 6px 11px; border-radius: 10px; background: white; }
+.pesticide-facts dt { color: var(--muted); font-size: .58rem; font-weight: 700; }
+.pesticide-facts dd { margin: 0; font-size: .8rem; font-weight: 650; }
+.pesticide-facts .is-phi { background: var(--green-800); }
+.pesticide-facts .is-phi dt { color: var(--mint-200); }
+.pesticide-facts .is-phi dd { color: white; }
+.pesticide-safety { margin: 0; color: #7a2e33; font-size: .78rem; line-height: 1.55; }
