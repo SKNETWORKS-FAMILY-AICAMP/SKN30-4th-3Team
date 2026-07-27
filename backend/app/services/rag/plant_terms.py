@@ -133,6 +133,43 @@ def get_plant_aliases() -> Dict[str, str]:
     return _cache_aliases
 
 
+def resolve_target_crop_terms(name: str | None, species: str | None) -> list[str]:
+    """plant_data의 name/species를 도감 용어 사전으로 정규화해, rag_chunks의
+    crop_or_plant 구조화 태그와 직접 비교 가능한 한글 작물명 후보를 만든다.
+
+    자유 텍스트 질문 문자열을 파싱해서 작물명을 추정하는 방식(specific_query_terms)보다
+    신뢰도가 높다 — 사용자가 지은 별명이나 질문 표현에 흔들리지 않고, 사용자가
+    등록한 식물 레코드(name/species) 자체를 근거로 삼기 때문이다.
+    """
+    _refresh_if_stale()
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(term: str | None) -> None:
+        if not term:
+            return
+        term = term.strip()
+        if term and term not in seen:
+            seen.add(term)
+            terms.append(term)
+
+    clean_name = (name or "").strip()
+    if clean_name in _cache_terms:
+        _add(clean_name)
+    elif clean_name:
+        first_token = clean_name.split()[0]
+        if first_token in _cache_terms:
+            _add(first_token)
+
+    clean_species = (species or "").strip()
+    for word in clean_species.replace("'", " ").replace(".", " ").split():
+        alias = _cache_aliases.get(word.strip().lower())
+        if alias:
+            _add(alias)
+
+    return terms
+
+
 def find_catalog_watering_interval(name: str | None, species: str | None) -> int | None:
     """
     도감(plant_catalog)에서 이 식물에 해당하는 권장 물주기 간격을 찾는다.

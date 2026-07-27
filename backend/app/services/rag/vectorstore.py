@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.db import session
 from app.core.config import settings
@@ -75,16 +75,38 @@ def specific_query_terms(query: str) -> List[str]:
     return specific
 
 
-def filter_by_specific_terms(query: str, results: List[SearchResult]) -> List[SearchResult]:
+def filter_by_specific_terms(
+    query: str,
+    results: List[SearchResult],
+    target_crop_terms: Optional[List[str]] = None,
+) -> List[SearchResult]:
     terms = specific_query_terms(query)
-    if not terms:
-        return results
     known_plant_terms = get_plant_terms()
-    plant_terms = [term for term in terms if term in known_plant_terms]
+    query_plant_terms = [term for term in terms if term in known_plant_terms]
+
+    # plant_data(사용자가 등록한 식물의 name/species)에서 정규화된 작물명이 있으면
+    # 자유 텍스트 파싱 결과보다 우선 신뢰한다 — 별명/표현 흔들림에 영향받지 않는다.
+    plant_terms = list(dict.fromkeys([*(target_crop_terms or []), *query_plant_terms]))
+
+    if not terms and not plant_terms:
+        return results
+
+    plant_terms_lower = {term.lower() for term in plant_terms}
 
     filtered = []
     for result in results:
         metadata = result.metadata or {}
+        crop_tags = [str(c).strip() for c in (metadata.get("crop_or_plant") or []) if str(c).strip()]
+
+        if plant_terms and crop_tags:
+            # 구조화 작물 태그(crop_or_plant)가 있으면 제목/본문 문자열 휴리스틱 대신
+            # 결정적 교집합 판정을 사용한다. 제목이 일반형이라 문자열 규칙이 놓치던
+            # "본문에 여러 작물이 나열된 문서"도 여기서 정확히 걸러진다.
+            crop_tags_lower = {tag.lower() for tag in crop_tags}
+            if crop_tags_lower & plant_terms_lower:
+                filtered.append(result)
+            continue
+
         haystack = " ".join(
             str(part or "")
             for part in [
@@ -95,6 +117,7 @@ def filter_by_specific_terms(query: str, results: List[SearchResult]) -> List[Se
             ]
         ).lower()
         if plant_terms:
+            # crop_or_plant 태그가 없는 문서(일반 원칙 문서 등)만 기존 문자열 휴리스틱을 적용한다.
             title_haystack = " ".join(
                 str(part or "")
                 for part in [
@@ -113,6 +136,27 @@ def filter_by_specific_terms(query: str, results: List[SearchResult]) -> List[Se
             filtered.append(result)
     return filtered
 
+def _extract_crop_or_plant(item: Dict[str, Any], metadata: Dict[str, Any]) -> List[str]:
+    """행/메타데이터에서 작물·식물 태그를 뽑는다.
+
+    적재 스크립트(data/scripts/load_supabase_pgvector.py)는 최상위 crop_or_plant
+    컬럼이 아니라 metadata.cropOrPlant(camelCase)에 값을 채운다 — 실측 결과 청크의
+    약 98%가 metadata.cropOrPlant를 갖고 있다. 두 경로 모두 확인해 향후 최상위
+    컬럼이 채워지더라도 그대로 동작하게 한다.
+    """
+    raw = (
+        item.get("crop_or_plant")
+        or metadata.get("cropOrPlant")
+        or metadata.get("crop_or_plant")
+        or []
+    )
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(v).strip() for v in raw if str(v).strip()]
+
+
 def normalize_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     nested_source = item.get("rag_sources") if isinstance(item.get("rag_sources"), dict) else {}
@@ -124,6 +168,7 @@ def normalize_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
         "publisher": item.get("publisher") or metadata.get("publisher") or nested_source.get("publisher"),
         "section": item.get("section") or metadata.get("section") or metadata.get("category"),
         "excerpt": item.get("excerpt") or metadata.get("excerpt") or metadata.get("contentPreview"),
+        "crop_or_plant": _extract_crop_or_plant(item, metadata),
     }
 
 def score_text(query_tokens: List[str], text: str, keywords: List[str]) -> float:
@@ -290,11 +335,19 @@ def fallback_keyword_search(query: str, top_k: int = 3) -> List[SearchResult]:
     results.sort(key=lambda x: x.score, reverse=True)
     return results[:top_k]
 
-def search_documents(query: str, top_k: int = 8) -> List[SearchResult]:
+def search_documents(
+    query: str,
+    top_k: int = 8,
+    target_crop_terms: Optional[List[str]] = None,
+) -> List[SearchResult]:
     """
     최적의 수단을 사용하여 지침 문서를 검색합니다.
     1순위: OpenAI Embedding + Supabase pgvector RPC 호출
     2순위: 텍스트 기반 로컬 키워드 매칭 Fallback 엔진
+
+    target_crop_terms: plant_data(name/species)를 정규화해 얻은 작물명 후보.
+    주어지면 filter_by_specific_terms가 crop_or_plant 구조화 태그와의 교집합
+    판정에 최우선으로 사용한다 (plant_terms.resolve_target_crop_terms 참고).
     """
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     
@@ -334,11 +387,11 @@ def search_documents(query: str, top_k: int = 8) -> List[SearchResult]:
             keyword_results = supabase_keyword_search(query, top_k)
             if vector_results or keyword_results:
                 merged_results = merge_results(keyword_results, vector_results, top_k=top_k)
-                return filter_by_specific_terms(query, merged_results)[:top_k]
+                return filter_by_specific_terms(query, merged_results, target_crop_terms)[:top_k]
         except Exception as e:
             print(f"[RAG SEARCH WARNING] Supabase pgvector RPC 검색 중 오류 발생, Supabase keyword fallback 전환: {e}")
 
     supabase_results = supabase_keyword_search(query, top_k)
     if supabase_results:
-        return filter_by_specific_terms(query, supabase_results)[:top_k]
-    return filter_by_specific_terms(query, fallback_keyword_search(query, top_k))[:top_k]
+        return filter_by_specific_terms(query, supabase_results, target_crop_terms)[:top_k]
+    return filter_by_specific_terms(query, fallback_keyword_search(query, top_k), target_crop_terms)[:top_k]
