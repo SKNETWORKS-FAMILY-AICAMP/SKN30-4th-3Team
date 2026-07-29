@@ -14,6 +14,16 @@
 
    data/notebooks/supabase_supplement_targets.jsonl
 
+   파일을 새로 생성하거나 현재 Supabase plant_catalog 기준으로
+   갱신하려면 .env에 SUPABASE_URL과 SUPABASE_SERVICE_ROLE_KEY
+   (또는 읽기 가능한 SUPABASE_ANON_KEY)을 설정한 뒤 실행합니다.
+
+   python data/notebooks/PSIS_getReady_target_supabase.py
+
+   실제 파일을 쓰기 전에 대상 수만 확인하려면:
+
+   python data/notebooks/PSIS_getReady_target_supabase.py --dry-run
+
 4. unmatched 식물의 검색 후보를 수정하려면 다음 파일을 사용합니다.
 
    data/notebooks/unmatched_alias_candidates.jsonl
@@ -54,9 +64,19 @@ python data/notebooks/PSIS_unmatched_candidates.py --list
 
 data/notebooks/unmatched_alias_candidates.jsonl
 
+검색에 성공해 활성 큐에서 제거된 항목까지 포함한 전체 후보 스냅샷:
+
+data/notebooks/unmatched_alias_candidates_sample.jsonl
+
+현재 검색 이력에서 sample 파일을 다시 생성하려면:
+
+python data/notebooks/PSIS_unmatched_candidates.py --export-sample
+
 형식:
 
 {"name":"치콘","candidates":["치커리","엔다이브"]}
+
+*** 현재 local과 사용자 local의 candidates가 다른 경우, 최종 결과가 달라질 수 있습니다. 수동으로 검증 가능하게 만들었기 때문에, 두 local의 검색 목록을 동일하게 맞추고 싶은 경우, 후보 목록도 동일하게 설정하여야 합니다***
 
 
 ■ 3단계: unmatched 후보로 SVC01 재검색

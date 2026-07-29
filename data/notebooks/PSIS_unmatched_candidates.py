@@ -212,6 +212,14 @@ def parse_args() -> argparse.Namespace:
             "and rebuild crops.jsonl and crop_pesticide_relations.jsonl."
         ),
     )
+    action.add_argument(
+        "--export-sample",
+        action="store_true",
+        help=(
+            "Restore every attempted candidate, including resolved hits, "
+            "into a read-only sample JSONL for reproducibility."
+        ),
+    )
     parser.add_argument(
         "--all-psis-dir",
         type=Path,
@@ -227,6 +235,12 @@ def parse_args() -> argparse.Namespace:
         "--results-file",
         type=Path,
         help="Search history JSONL. Defaults inside --all-psis-dir.",
+    )
+    parser.add_argument(
+        "--sample-file",
+        type=Path,
+        default=NOTEBOOKS_DIR / "unmatched_alias_candidates_sample.jsonl",
+        help="Output path used by --export-sample.",
     )
     parser.add_argument("--api-key", default="")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
@@ -719,6 +733,74 @@ def list_status(queue_path: Path, results_path: Path) -> int:
     return 0
 
 
+def export_candidate_sample(
+    queue_path: Path,
+    results_path: Path,
+    sample_path: Path,
+) -> int:
+    """Export a reproducible snapshot without changing the active queue."""
+    queue_rows = read_jsonl(queue_path)
+    result_rows = read_jsonl(results_path)
+    by_key: dict[str, dict[str, Any]] = {}
+
+    for row in queue_rows:
+        key = normalize_text(row.get("key"))
+        if not key:
+            continue
+        by_key[key] = {
+            "key": key,
+            "name": normalize_text(row.get("name")),
+            "origin": normalize_text(row.get("origin")),
+            "candidates": clean_candidates(
+                row.get("candidates"),
+                normalize_text(row.get("name")),
+            ),
+        }
+
+    for row in result_rows:
+        key = normalize_text(row.get("target_key"))
+        if not key:
+            continue
+        item = by_key.setdefault(
+            key,
+            {
+                "key": key,
+                "name": normalize_text(row.get("target_name")),
+                "origin": normalize_text(row.get("target_origin")),
+                "candidates": [],
+            },
+        )
+        candidate = normalize_text(row.get("candidate"))
+        if (
+            candidate
+            and normalized_name(candidate)
+            != normalized_name(item["name"])
+            and candidate not in item["candidates"]
+        ):
+            item["candidates"].append(candidate)
+
+    sample_rows = sorted(
+        by_key.values(),
+        key=lambda row: (
+            normalized_name(row["name"]),
+            row["key"],
+        ),
+    )
+    write_jsonl_atomic(sample_path, sample_rows)
+
+    hit_keys = {
+        normalize_text(row.get("target_key"))
+        for row in result_rows
+        if normalize_text(row.get("status")).lower() == "hit"
+    }
+    print(
+        f"sample={len(sample_rows)} "
+        f"resolved_hits={len(hit_keys)} "
+        f"output={sample_path}"
+    )
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     queue_path, results_path = resolve_paths(args)
@@ -728,6 +810,12 @@ def main() -> int:
         return search_queue(queue_path, results_path, args)
     if args.collect_hits:
         return collect_recorded_hits(results_path, args)
+    if args.export_sample:
+        return export_candidate_sample(
+            queue_path,
+            results_path,
+            args.sample_file,
+        )
     return list_status(queue_path, results_path)
 
 
