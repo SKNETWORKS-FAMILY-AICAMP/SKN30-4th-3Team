@@ -139,6 +139,57 @@ def test_safety_review_without_retrieved_docs_key():
     assert final["safetyNotice"]
 
 
+# ---------------------------------------------------------------------------
+# safety_review: 농약 무관 질문에서 농약 문서를 제외했을 때의 고지
+# ---------------------------------------------------------------------------
+def test_off_topic_notice_when_pesticide_docs_were_filtered():
+    """가드가 농약 문서를 뺐으므로 '제외했다' 고지만 붙고 농약 처방 고지는 붙지 않는다."""
+    final = nodes_generation.safety_review({
+        "draft_answer": draft(),
+        "retrieved_docs": [doc(["not_diagnosis"])],
+        "pesticide_docs_filtered": 2,
+        "response_mode": "expert",
+    })["final_answer"]
+
+    assert nodes_generation.OFF_TOPIC_PESTICIDE_NOTICE in final["safetyNotice"]
+    assert nodes_generation.PESTICIDE_CAUTION_NOTICE not in final["safetyNotice"]
+
+
+def test_off_topic_notice_absent_when_pesticide_docs_were_kept():
+    """농약 질문이라 가드가 통과시킨 경우 — 기존 농약 고지만 붙는다."""
+    final = nodes_generation.safety_review({
+        "draft_answer": draft(),
+        "retrieved_docs": [doc(["pesticide_caution"])],
+        "pesticide_docs_filtered": 0,
+        "response_mode": "expert",
+    })["final_answer"]
+
+    assert nodes_generation.PESTICIDE_CAUTION_NOTICE in final["safetyNotice"]
+    assert nodes_generation.OFF_TOPIC_PESTICIDE_NOTICE not in final["safetyNotice"]
+
+
+def test_off_topic_notice_applies_in_companion_mode():
+    final = nodes_generation.safety_review({
+        "draft_answer": draft(),
+        "retrieved_docs": [],
+        "pesticide_docs_filtered": 1,
+        "response_mode": "companion",
+    })["final_answer"]
+    assert nodes_generation.OFF_TOPIC_PESTICIDE_NOTICE in final["safetyNotice"]
+
+
+def test_generation_notice_and_off_topic_notice_coexist():
+    final = nodes_generation.safety_review({
+        "draft_answer": draft(),
+        "retrieved_docs": [],
+        "pesticide_docs_filtered": 1,
+        "generation_notice": "현재 AI 생성 연결을 확인할 수 없어",
+        "response_mode": "expert",
+    })["final_answer"]
+    assert "현재 AI 생성 연결을 확인할 수 없어" in final["safetyNotice"]
+    assert nodes_generation.OFF_TOPIC_PESTICIDE_NOTICE in final["safetyNotice"]
+
+
 def test_generation_notice_and_pesticide_notice_coexist():
     final = nodes_generation.safety_review({
         "draft_answer": draft(),

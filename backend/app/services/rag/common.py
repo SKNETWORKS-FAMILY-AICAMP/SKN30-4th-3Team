@@ -53,6 +53,25 @@ def plant_persona_status(plant: Dict[str, Any], care_logs: List[Dict[str, Any]])
     return " ".join(lines)
 
 
+def document_safety_tags(doc: Any) -> List[str]:
+    """검색 문서 하나에서 안전 태그를 읽는다.
+
+    로더(data/scripts/load_supabase_pgvector.py)가 최상위 snake_case 컬럼 대신
+    metadata의 camelCase 키에만 값을 넣는 경우가 있어 양쪽을 모두 확인한다.
+    """
+    if not isinstance(doc, dict):
+        return []
+    metadata = doc.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("safety_tags") or metadata.get("safetyTags") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(tag).strip() for tag in raw if str(tag).strip()]
+
+
 def make_excerpt(text: str, max_len: int = 220) -> str:
     clean = " ".join((text or "").split())
     if len(clean) <= max_len:
@@ -149,6 +168,8 @@ class AgentState(TypedDict):
     user_context: str
     search_query: str
     retrieved_docs: List[Dict[str, Any]]
+    # 농약 무관 질문이라 근거에서 제외한 농약 문서 수 (pesticide_guard)
+    pesticide_docs_filtered: int
     draft_answer: Dict[str, Any]
     final_answer: Dict[str, Any]
     generation_notice: Optional[str]

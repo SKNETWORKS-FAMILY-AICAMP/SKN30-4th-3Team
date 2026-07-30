@@ -5,6 +5,7 @@ from typing import Dict, Any
 
 from app.core.config import settings
 from app.services.rag.common import AgentState, is_smalltalk_question
+from app.services.rag.pesticide_guard import apply_pesticide_guard
 from app.services.rag.plant_terms import resolve_target_crop_terms
 from app.services.rag.vectorstore import search_documents
 
@@ -99,6 +100,21 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
         })
     return {"retrieved_docs": docs}
 
+def _finalize_docs(question: str, docs: list) -> Dict[str, Any]:
+    """grade_or_rerank의 단일 출구.
+
+    LLM 리랭커가 예외/키없음으로 fail-open 하는 경로에서도 농약 가드는 반드시
+    지나가야 하므로, 모든 반환을 이 함수로 모은다.
+    """
+    kept, excluded = apply_pesticide_guard(question, docs)
+    if excluded:
+        logger.info(
+            "Pesticide guard: dropped %d off-topic pesticide doc(s) for a non-pesticide question",
+            excluded,
+        )
+    return {"retrieved_docs": kept, "pesticide_docs_filtered": excluded}
+
+
 # 6. grade_or_rerank 노드
 def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
     docs = state["retrieved_docs"]
@@ -112,7 +128,7 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     
     if not openai_key or not docs:
-        return {"retrieved_docs": docs[:4]}
+        return _finalize_docs(question, docs[:4])
         
     try:
         import json as _json
@@ -160,7 +176,7 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
                     break
 
         # 모두 무관 판정이면 빈 리스트 유지 — 무관 문서를 억지로 주입하지 않는다 (환각 방지)
-        return {"retrieved_docs": filtered_docs}
+        return _finalize_docs(question, filtered_docs)
     except Exception as e:
         logger.warning("Reranking failed: %s", e)
-        return {"retrieved_docs": docs[:4]}
+        return _finalize_docs(question, docs[:4])

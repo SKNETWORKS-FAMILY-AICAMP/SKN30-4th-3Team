@@ -8,6 +8,7 @@ UNION 마이그레이션(supabase/migrations/20260730120000_*.sql) 적용 전후
   AC-2  농약 근거 사용 시 안전 고지 포함 여부
   AC-3  "토마토 + 응애 + 농약" 질의에서 토마토 문서 검색 (마이그레이션 후 통과)
   AC-4  실내식물(몬스테라 등) 농약 질의 회귀
+  AC-5  농약과 무관한 질문에서 농약 문서가 근거로 남지 않는지 (pesticide_guard)
 
 실행:
     cd backend
@@ -24,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import settings  # noqa: E402
 from app.services.rag import nodes_generation  # noqa: E402
+from app.services.rag.pesticide_guard import apply_pesticide_guard, is_pesticide_question  # noqa: E402
 from app.services.rag.plant_terms import resolve_target_crop_terms  # noqa: E402
 from app.services.rag.vectorstore import search_documents  # noqa: E402
 
@@ -48,6 +50,10 @@ def run_case(plant_name, species, question, top_k=8):
     results = search_documents(question, top_k=top_k, target_crop_terms=target_terms)
     docs = [{"content": r.content, "metadata": r.metadata, "score": r.score} for r in results]
 
+    # 실제 파이프라인은 grade_or_rerank 출구에서 농약 가드를 통과시킨다.
+    # 여기서도 같은 순서로 적용해야 safety_review 결과가 운영 동작과 일치한다.
+    guarded_docs, pesticide_filtered = apply_pesticide_guard(question, docs)
+
     draft = {
         "summary": "관찰이 필요합니다.",
         "possibleCauses": ["원인 후보"],
@@ -57,11 +63,13 @@ def run_case(plant_name, species, question, top_k=8):
     }
     final = nodes_generation.safety_review({
         "draft_answer": draft,
-        "retrieved_docs": docs,
+        "retrieved_docs": guarded_docs,
+        "pesticide_docs_filtered": pesticide_filtered,
         "response_mode": "expert",
     })["final_answer"]
 
-    tags = nodes_generation.collect_document_safety_tags(docs)
+    tags = nodes_generation.collect_document_safety_tags(guarded_docs)
+    # 작물 오매칭(AC-1)은 검색 단계의 성질이므로 가드 이전 문서로 검사한다.
     target_lower = {t.lower() for t in target_terms}
     mismatched = []
     own_crop_docs = 0
@@ -79,10 +87,13 @@ def run_case(plant_name, species, question, top_k=8):
         "retrieved": len(docs),
         "own_crop_docs": own_crop_docs,
         "mismatched_docs": mismatched,
+        "pesticide_intent": is_pesticide_question(question),
+        "pesticide_docs_filtered": pesticide_filtered,
         "safety_tags": tags,
         "has_pesticide_doc": "pesticide_caution" in tags,
         "pesticide_notice_present": nodes_generation.PESTICIDE_CAUTION_NOTICE in final["safetyNotice"],
-        "titles": [d["metadata"].get("title") for d in docs],
+        "off_topic_notice_present": nodes_generation.OFF_TOPIC_PESTICIDE_NOTICE in final["safetyNotice"],
+        "titles": [d["metadata"].get("title") for d in guarded_docs],
     }
 
 
@@ -110,12 +121,20 @@ def main():
     ac2 = all(r["pesticide_notice_present"] for r in report.values() if r["has_pesticide_doc"])
     ac3 = report["AC3_tomato_mite"]["own_crop_docs"] >= 1
     ac4 = report["AC4_monstera_mite"]["retrieved"] >= 1
+    # AC-5: 농약 의도가 없는 질문은 농약 근거를 쓰지 않고, 제외했다면 고지한다.
+    ac5 = all(
+        (not r["has_pesticide_doc"])
+        and (r["off_topic_notice_present"] if r["pesticide_docs_filtered"] else True)
+        for r in report.values()
+        if not r["pesticide_intent"]
+    )
 
     verdicts = {
         "AC-1 작물 오매칭 차단": ac1,
         "AC-2 농약 안전고지 포함": ac2,
         "AC-3 토마토 농약 문서 검색": ac3,
         "AC-4 실내식물 회귀": ac4,
+        "AC-5 농약 무관 질문 가드": ac5,
     }
 
     if args.json:
@@ -127,6 +146,9 @@ def main():
         print(f"   질의            : {r['question']}")
         print(f"   target_crop_terms: {r['target_crop_terms']}")
         print(f"   검색 {r['retrieved']}건 / 해당 작물 문서 {r['own_crop_docs']}건 / 오매칭 {len(r['mismatched_docs'])}건")
+        print(f"   질문 농약 의도  : {'있음' if r['pesticide_intent'] else '없음'}"
+              f"  → 가드 제외 {r['pesticide_docs_filtered']}건"
+              f" ({'제외 고지 포함' if r['off_topic_notice_present'] else '제외 고지 없음'})")
         print(f"   농약 근거       : {'있음' if r['has_pesticide_doc'] else '없음'}"
               f"  → 안전고지 {'포함' if r['pesticide_notice_present'] else '미포함'}")
         for title in r["titles"][:4]:
