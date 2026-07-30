@@ -63,13 +63,20 @@ _cache_loaded_at: float = 0.0
 def _load_from_catalog() -> tuple[Set[str], Dict[str, str], list]:
     from app.db import session
 
-    try:
-        response = session.supabase.table("plant_catalog").select(
-            "name,species,watering_interval_days"
-        ).execute()
-    except Exception:
-        # watering_interval_days 컬럼 미적용(마이그레이션 전) 환경
-        response = session.supabase.table("plant_catalog").select("name,species").execute()
+    # aliases/watering_interval_days 컬럼 미적용(마이그레이션 전) 환경까지 단계적 폴백
+    response = None
+    for columns in (
+        "name,species,watering_interval_days,aliases",
+        "name,species,watering_interval_days",
+        "name,species",
+    ):
+        try:
+            response = session.supabase.table("plant_catalog").select(columns).execute()
+            break
+        except Exception:
+            response = None
+    if response is None:
+        raise RuntimeError("plant_catalog select 실패")
 
     terms: Set[str] = set(DEFAULT_PLANT_TERMS)
     aliases: Dict[str, str] = dict(DEFAULT_PLANT_ALIASES)
@@ -85,6 +92,12 @@ def _load_from_catalog() -> tuple[Set[str], Dict[str, str], list]:
         first_token = name.split()[0]
         if len(first_token) >= 2:
             terms.add(first_token)
+        # 이명(별칭) → 표준국명 첫 토큰으로 매핑 (예: 방울토마토→토마토, 길경→도라지)
+        for alias_name in (row.get("aliases") or []):
+            alias_name = str(alias_name).strip()
+            if len(alias_name) >= 2:
+                terms.add(alias_name)
+                aliases.setdefault(alias_name, first_token)
         # 학명/영문명의 각 단어를 국문명으로 매핑 (예: "Monstera deliciosa" → 몬스테라)
         for word in species.replace("'", " ").replace(".", " ").split():
             word_lower = word.strip().lower()
