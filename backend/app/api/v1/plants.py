@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plants", tags=["Plants"])
 
+
+def ensure_owned_garden(garden_id: uuid.UUID, user_id: uuid.UUID, db: Client) -> None:
+    response = (
+        db.table("gardens")
+        .select("id")
+        .eq("id", str(garden_id))
+        .eq("user_id", str(user_id))
+        .execute()
+    )
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="텃밭을 찾을 수 없거나 접근 권한이 없습니다.",
+        )
+
 @router.get("", response_model=List[Plant], summary="사용자의 식물 목록 조회")
 def list_plants(
     current_user_id: uuid.UUID = Depends(get_current_user),
@@ -33,6 +48,7 @@ def list_plants(
                 location=item.get("location"),
                 sunlight=item.get("sunlight"),
                 imageUrl=item.get("image_url"),
+                gardenId=uuid.UUID(item["garden_id"]) if item.get("garden_id") else None,
                 createdAt=datetime.fromisoformat(item["created_at"])
             ))
         return plants
@@ -243,6 +259,8 @@ def create_plant(
     새로운 식물 프로필을 데이터베이스에 등록합니다.
     """
     try:
+        if plant_in.gardenId is not None:
+            ensure_owned_garden(plant_in.gardenId, current_user_id, db)
         insert_data = {
             "user_id": str(current_user_id),
             "name": plant_in.name,
@@ -250,7 +268,8 @@ def create_plant(
             "location": plant_in.location,
             "sunlight": plant_in.sunlight,
             "health_score": None,
-            "image_url": plant_in.imageUrl
+            "image_url": plant_in.imageUrl,
+            "garden_id": str(plant_in.gardenId) if plant_in.gardenId else None,
         }
         response = db.table("plants").insert(insert_data).execute()
         if not response.data:
@@ -267,6 +286,7 @@ def create_plant(
             location=item.get("location"),
             sunlight=item.get("sunlight"),
             imageUrl=item.get("image_url"),
+            gardenId=uuid.UUID(item["garden_id"]) if item.get("garden_id") else None,
             createdAt=datetime.fromisoformat(item["created_at"])
         )
     except Exception:
@@ -431,6 +451,7 @@ def get_plant_detail(
             location=plant_data.get("location"),
             sunlight=plant_data.get("sunlight"),
             imageUrl=plant_data.get("image_url"),
+            gardenId=uuid.UUID(plant_data["garden_id"]) if plant_data.get("garden_id") else None,
             createdAt=datetime.fromisoformat(plant_data["created_at"]),
             careLogs=care_logs,
             photos=photos
@@ -498,12 +519,22 @@ def update_plant(
             update_data["sunlight"] = plant_in.sunlight
         if plant_in.imageUrl is not None:
             update_data["image_url"] = plant_in.imageUrl
+        if "gardenId" in plant_in.model_fields_set:
+            if plant_in.gardenId is not None:
+                ensure_owned_garden(plant_in.gardenId, current_user_id, db)
+            update_data["garden_id"] = str(plant_in.gardenId) if plant_in.gardenId else None
             
         if not update_data:
             plant_res = db.table("plants").select("*").eq("id", str(plantId)).execute()
             item = plant_res.data[0]
         else:
-            response = db.table("plants").update(update_data).eq("id", str(plantId)).execute()
+            response = (
+                db.table("plants")
+                .update(update_data)
+                .eq("id", str(plantId))
+                .eq("user_id", str(current_user_id))
+                .execute()
+            )
             item = response.data[0]
             
         return Plant(
@@ -513,6 +544,7 @@ def update_plant(
             location=item.get("location"),
             sunlight=item.get("sunlight"),
             imageUrl=item.get("image_url"),
+            gardenId=uuid.UUID(item["garden_id"]) if item.get("garden_id") else None,
             createdAt=datetime.fromisoformat(item["created_at"])
         )
     except HTTPException:

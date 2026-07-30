@@ -44,9 +44,11 @@ from app.api.v1.chat import router as chat_router
 from app.api.v1.uploads import router as uploads_router
 from app.api.v1.catalog import router as catalog_router
 from app.api.v1.rag import router as rag_router
+from app.api.v1.gardens import router as gardens_router
 
 app.include_router(plants_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(uploads_router, prefix="/api/v1")
 app.include_router(catalog_router, prefix="/api/v1")
 app.include_router(rag_router, prefix="/api/v1")
+app.include_router(gardens_router, prefix="/api/v1")

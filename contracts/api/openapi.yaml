@@ -90,6 +90,62 @@ paths:
           description: Plant profile deleted successfully
         "404":
           description: Plant not found or access denied
+  /api/v1/gardens:
+    get:
+      summary: List current user's gardens
+      responses:
+        "200":
+          description: Garden list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Garden"
+    post:
+      summary: Create a garden
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GardenCreate"
+      responses:
+        "201":
+          description: Created garden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Garden"
+  /api/v1/gardens/{gardenId}:
+    patch:
+      summary: Update a garden
+      parameters:
+        - $ref: "#/components/parameters/GardenId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GardenUpdate"
+      responses:
+        "200":
+          description: Updated garden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Garden"
+        "404":
+          description: Garden not found or access denied
+    delete:
+      summary: Delete a garden and unassign its plants
+      parameters:
+        - $ref: "#/components/parameters/GardenId"
+      responses:
+        "204":
+          description: Garden deleted successfully
+        "404":
+          description: Garden not found or access denied
   /api/v1/plants/{plantId}/care-logs:
     post:
       summary: Create a care log for a plant
@@ -332,6 +388,13 @@ components:
       schema:
         type: string
         format: uuid
+    GardenId:
+      name: gardenId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
     PlantCreate:
       type: object
@@ -350,6 +413,10 @@ components:
         imageUrl:
           type: string
           example: https://xyz.supabase.co/storage/v1/object/public/plant-photos/abc.jpg
+        gardenId:
+          type: string
+          format: uuid
+          nullable: true
     Plant:
       allOf:
         - $ref: "#/components/schemas/PlantCreate"
@@ -359,6 +426,61 @@ components:
             id:
               type: string
               format: uuid
+            createdAt:
+              type: string
+              format: date-time
+    GardenCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 40
+        location:
+          type: string
+          maxLength: 60
+        description:
+          type: string
+          maxLength: 80
+        sunlight:
+          type: string
+          maxLength: 40
+        soilType:
+          type: string
+          maxLength: 40
+    GardenUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 40
+        location:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        sunlight:
+          type: string
+          nullable: true
+        soilType:
+          type: string
+          nullable: true
+    Garden:
+      allOf:
+        - $ref: "#/components/schemas/GardenCreate"
+        - type: object
+          required: [id, plantCount, createdAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            plantCount:
+              type: integer
+              minimum: 0
+            imageUrl:
+              type: string
+              nullable: true
             createdAt:
               type: string
               format: date-time
@@ -574,6 +696,10 @@ components:
           type: string
         imageUrl:
           type: string
+        gardenId:
+          type: string
+          format: uuid
+          nullable: true
     CareLogUpdate:
       type: object
       properties:

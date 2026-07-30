@@ -82,6 +82,7 @@ class MockSupabaseTable:
                             "species": "Monstera deliciosa",
                             "location": "거실 창가",
                             "sunlight": "간접광",
+                            "garden_id": "a3b07384-d113-49c3-a558-1ec114a84d40",
                             "image_url": "https://xyz.supabase.co/storage/v1/object/public/plant-photos/abc.jpg",
                             "created_at": "2026-06-01T12:00:00+00:00"
                         }
@@ -98,6 +99,7 @@ class MockSupabaseTable:
                         "species": insert_val.get("species"),
                         "location": insert_val.get("location"),
                         "sunlight": insert_val.get("sunlight"),
+                        "garden_id": insert_val.get("garden_id"),
                         "image_url": insert_val.get("image_url"),
                         "created_at": datetime.now(timezone.utc).isoformat()
                     }
@@ -112,10 +114,37 @@ class MockSupabaseTable:
                         "species": update_val.get("species", "Monstera deliciosa"),
                         "location": update_val.get("location", "거실 창가"),
                         "sunlight": update_val.get("sunlight", "간접광"),
+                        "garden_id": update_val.get("garden_id", "a3b07384-d113-49c3-a558-1ec114a84d40"),
                         "image_url": update_val.get("image_url", "https://xyz.supabase.co/storage/v1/object/public/plant-photos/abc.jpg"),
                         "created_at": "2026-06-01T12:00:00+00:00"
                     }
                 ]
+        elif self.name == "gardens":
+            garden = {
+                "id": "a3b07384-d113-49c3-a558-1ec114a84d40",
+                "user_id": str(TEST_USER_ID),
+                "name": "베란다 텃밭",
+                "location": "남향 베란다",
+                "description": "상추와 토마토",
+                "sunlight": "오전 직사광선",
+                "soil_type": "상토",
+                "image_url": None,
+                "created_at": "2026-06-01T12:00:00+00:00",
+            }
+            eq_queries = [q for q in self.queries if q[0] == "eq"]
+            requested_id = next((str(q[2]) for q in eq_queries if q[1] == "id"), None)
+            if requested_id and requested_id != garden["id"]:
+                data = []
+            elif any(q[0] == "insert" for q in self.queries):
+                insert_val = next(q[1] for q in self.queries if q[0] == "insert")
+                data = [{**garden, **insert_val, "id": garden["id"]}]
+            elif any(q[0] == "update" for q in self.queries):
+                update_val = next(q[1] for q in self.queries if q[0] == "update")
+                data = [{**garden, **update_val}]
+            elif any(q[0] == "delete" for q in self.queries):
+                data = [{"id": garden["id"]}]
+            elif any(q[0] == "select" for q in self.queries):
+                data = [garden]
         elif self.name == "care_logs":
             if any(q[0] == "select" for q in self.queries):
                 data = [
@@ -364,6 +393,71 @@ def test_create_plant():
     assert data["name"] == "홍바오"
     assert "id" in data
     assert "createdAt" in data
+
+
+def test_list_gardens_with_plant_count():
+    response = client.get("/api/v1/gardens")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "베란다 텃밭"
+    assert data[0]["plantCount"] == 1
+
+
+def test_create_garden():
+    response = client.post(
+        "/api/v1/gardens",
+        json={"name": "옥상 텃밭", "location": "옥상", "sunlight": "종일 직사광선", "soilType": "상토"},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["name"] == "옥상 텃밭"
+    assert data["soilType"] == "상토"
+
+
+def test_reject_blank_garden_name():
+    response = client.post("/api/v1/gardens", json={"name": "   "})
+    assert response.status_code == 422
+
+
+def test_update_garden():
+    garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
+    response = client.patch(f"/api/v1/gardens/{garden_id}", json={"name": "새 텃밭", "description": "허브 구획"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "새 텃밭"
+    assert data["description"] == "허브 구획"
+
+
+def test_delete_garden_unassigns_plants():
+    garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
+    response = client.delete(f"/api/v1/gardens/{garden_id}")
+    assert response.status_code == 204
+
+
+def test_garden_not_found():
+    response = client.patch(
+        "/api/v1/gardens/00000000-0000-0000-0000-000000000000",
+        json={"name": "없는 텃밭"},
+    )
+    assert response.status_code == 404
+
+
+def test_assign_plant_to_owned_garden():
+    plant_id = "d3b07384-d113-49c3-a558-1ec114a84d41"
+    garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
+    response = client.patch(f"/api/v1/plants/{plant_id}", json={"gardenId": garden_id})
+    assert response.status_code == 200
+    assert response.json()["gardenId"] == garden_id
+
+
+def test_reject_assigning_plant_to_unknown_garden():
+    plant_id = "d3b07384-d113-49c3-a558-1ec114a84d41"
+    response = client.patch(
+        f"/api/v1/plants/{plant_id}",
+        json={"gardenId": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert response.status_code == 404
 
 def test_create_care_log():
     plant_id = "d3b07384-d113-49c3-a558-1ec114a84d41"

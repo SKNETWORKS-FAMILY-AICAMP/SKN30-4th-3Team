@@ -13,12 +13,25 @@ IF NOT EXISTS vector;
                 full_name TEXT                     ,
                 avatar_url TEXT );
     -- 3. plants (사용자별 식물 프로필 테이블)
+    CREATE TABLE IF NOT EXISTS public.gardens
+        (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+            name        TEXT NOT NULL,
+            location    TEXT,
+            description TEXT,
+            sunlight    TEXT,
+            soil_type   TEXT,
+            image_url   TEXT,
+            created_at  TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+        );
     CREATE TABLE IF NOT EXISTS public.plants
         (
             id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID NOT NULL REFERENCES public.profiles(id) ON
             DELETE
                 CASCADE                         ,
+                garden_id UUID REFERENCES public.gardens(id) ON DELETE SET NULL,
                 name TEXT NOT NULL              ,
                 species TEXT                    ,
                 location TEXT                   ,
@@ -188,6 +201,8 @@ IF NOT EXISTS vector;
     -- =========================================================================
     ALTER TABLE public.profiles
         ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.gardens
+        ENABLE ROW LEVEL SECURITY;
     ALTER TABLE public.plants
         ENABLE ROW LEVEL SECURITY;
     ALTER TABLE public.care_logs
@@ -215,6 +230,9 @@ IF NOT EXISTS vector;
     USING
         (auth.uid() = id);
     -- 2) 식물 정보: 본인 식물 데이터만 CRUD 가능
+    CREATE POLICY "Allow individual CRUD on own gardens" ON public.gardens
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
     CREATE POLICY "Allow individual CRUD on own plants" ON public.plants USING (auth.uid() = user_id);
     -- 3) 재배 로그: 본인 식물의 로그만 CRUD 가능
     CREATE POLICY "Allow individual CRUD on care logs through plant owner" ON public.care_logs USING (EXISTS
