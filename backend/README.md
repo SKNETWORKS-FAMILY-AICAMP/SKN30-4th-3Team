@@ -162,3 +162,83 @@ Python 내부 모델에서 snake_case를 쓰더라도 API 응답은 `contracts/a
 - MVP는 Render 또는 Railway를 추천합니다.
 - Docker 기반 배포가 필요하면 `server/`의 설정을 사용합니다.
 - `/health` endpoint는 배포 health check로 사용합니다.
+
+## OpenAI 장애 시 로컬 모델 fallback
+
+상담 파이프라인은 OpenAI를 우선 사용하고, 인증·quota·rate limit·timeout·5xx 장애가 발생하면
+Ollama의 OpenAI 호환 API로 자동 전환할 수 있습니다. 로컬 개발 기본 모델은 텍스트와 이미지를
+함께 처리하고 구조화 응답에 불필요한 추론 토큰을 쓰지 않는 `qwen3-vl:4b-instruct`입니다.
+
+1. Ollama를 실행하고 모델을 준비합니다.
+
+   ```powershell
+   ollama pull qwen3-vl:4b-instruct
+   ollama serve
+   ```
+
+2. root `.env`에 다음 값을 설정합니다. 배포 환경에서 별도 모델 서버를 준비하지 않았다면
+   `LLM_FALLBACK_ENABLED=false`로 둡니다.
+
+   ```dotenv
+   LLM_FALLBACK_ENABLED=true
+   LOCAL_LLM_AUXILIARY_ENABLED=false
+   LOCAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
+   LOCAL_LLM_API_KEY=ollama
+   LOCAL_CHAT_MODEL=qwen3-vl:4b-instruct
+   LOCAL_VISION_MODEL=qwen3-vl:4b-instruct
+   LLM_FAILURE_THRESHOLD=2
+   LLM_CIRCUIT_OPEN_SECONDS=60
+   LOCAL_LLM_TIMEOUT_SECONDS=120
+   ```
+
+3. Backend를 재시작하고 상태를 확인합니다.
+
+   ```powershell
+   Invoke-RestMethod http://127.0.0.1:8000/api/v1/chat/model-info
+   ```
+
+상담 요청에서는 답변 모델을 선택할 수 있습니다. OpenAI 모델은 서버 allowlist에 있는
+`gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`만 허용하며, 임의 모델 문자열은 422로 거부합니다.
+로컬 모델은 서버의 `LOCAL_CHAT_MODEL` 값을 사용하므로 클라이언트가 모델 ID를 지정하지 않습니다.
+
+```json
+{
+  "plantId": "식물 UUID",
+  "question": "잎이 노랗게 변했어요.",
+  "llmProvider": "openai",
+  "llmModel": "gpt-5.6-sol"
+}
+```
+
+로컬 모델을 직접 선택하려면 `llmProvider`만 전달합니다. OpenAI 선택 요청이 인증·quota·timeout
+등으로 실패하면 기존 circuit breaker 정책에 따라 로컬 모델로 fallback하며, 응답의
+`llmProvider`와 `llmModel`에는 실제 답변 생성에 사용된 공급자와 모델이 반환됩니다.
+
+```json
+{
+  "plantId": "식물 UUID",
+  "question": "잎이 노랗게 변했어요.",
+  "llmProvider": "local"
+}
+```
+
+`primaryCircuit.state`가 `open`이면 설정된 시간 동안 OpenAI를 건너뛰고 로컬 모델을 바로
+사용합니다. 로컬 모델까지 실패하면 기존 근거 기반 정적 안내가 반환됩니다. 임베딩은 기존
+OpenAI 1536차원 인덱스를 유지하며, primary circuit이 열렸거나 임베딩 호출이 실패하면 키워드
+검색으로 전환합니다. 서로 다른 임베딩 모델의 벡터는 같은 인덱스에 혼합하지 않습니다.
+
+CPU 개발 환경에서는 검색어 확장과 문서 재정렬까지 로컬 모델에 맡기면 한 질문에 여러 번의
+추론이 발생하므로 `LOCAL_LLM_AUXILIARY_ENABLED=false`를 권장합니다. 이 경우 검색 보조 단계는
+기존 결정적 쿼리와 작물 필터를 사용하고, 최종 답변과 사진 분석만 로컬 모델로 전환합니다.
+GPU 모델 서버에서는 품질 검증 후 이 값을 `true`로 켤 수 있습니다.
+
+Vercel의 `localhost`는 개발자 PC가 아닙니다. 배포 환경에서 fallback을 활성화하려면 Backend가
+접근할 수 있는 별도 Ollama 서버와 TLS/인증 프록시가 필요하며, Ollama 포트를 인증 없이 외부에
+직접 공개하면 안 됩니다.
+
+테스트는 실제 OpenAI/Ollama 호출 없이 실행합니다.
+
+```powershell
+$env:LLM_FALLBACK_ENABLED='false'
+python -m pytest backend/tests -q
+```

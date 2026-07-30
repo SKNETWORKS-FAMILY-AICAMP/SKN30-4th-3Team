@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     CHAT_MODEL: str = "gpt-4o-mini"
     VISION_MODEL: str = "gpt-4o-mini"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    LLM_FALLBACK_ENABLED: bool = False
+    LOCAL_LLM_AUXILIARY_ENABLED: bool = False
+    LOCAL_LLM_BASE_URL: str = "http://127.0.0.1:11434/v1"
+    LOCAL_LLM_API_KEY: str = "ollama"
+    LOCAL_CHAT_MODEL: str = "qwen3-vl:4b-instruct"
+    LOCAL_VISION_MODEL: str = "qwen3-vl:4b-instruct"
+    LLM_FAILURE_THRESHOLD: int = 2
+    LLM_CIRCUIT_OPEN_SECONDS: float = 60.0
+    LOCAL_LLM_TIMEOUT_SECONDS: float = 120.0
 
     # Pydantic Settings가 파일을 읽어들일 위치 후보군 지정
     # 프로젝트 루트(.env) 또는 backend 폴더 내부(.env) 어디서든 환경변수를 불러올 수 있게 지원합니다.

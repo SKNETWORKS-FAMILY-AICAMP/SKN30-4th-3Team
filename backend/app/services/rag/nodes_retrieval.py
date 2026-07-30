@@ -4,6 +4,8 @@ import os
 from typing import Dict, Any
 
 from app.core.config import settings
+from app.services.llm import chat_completion
+from app.services.llm.schemas import QueryExpansion, RerankDecision, parse_json_object
 from app.services.rag.common import AgentState, is_smalltalk_question
 from app.services.rag.plant_terms import resolve_target_crop_terms
 from app.services.rag.vectorstore import search_documents
@@ -23,30 +25,29 @@ def build_retrieval_query(state: AgentState) -> Dict[str, Any]:
         return {"search_query": ""}
     
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
-    if openai_key:
+    if openai_key or (settings.LLM_FALLBACK_ENABLED and settings.LOCAL_LLM_AUXILIARY_ENABLED):
         try:
-            import json
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key, timeout=12.0, max_retries=0)
             prompt = (
                 "당신은 식물 관리 RAG 시스템의 검색 쿼리 생성기입니다. "
                 "주어진 상황에서 가장 관련성 높은 문서를 찾기 위한 검색 키워드 3개를 만드세요. "
                 "JSON 형식으로 {'queries': ['키워드1', '키워드2', '키워드3']} 반환하세요."
             )
-            res = client.chat.completions.create(
-                model=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+            completion = chat_completion(
+                primary_model=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+                local_model=settings.LOCAL_CHAT_MODEL,
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                primary_timeout=12.0,
+                max_tokens=300,
+                allow_local_fallback=settings.LOCAL_LLM_AUXILIARY_ENABLED,
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": f"질문: {question}\n식물: {plant.get('species') or plant.get('name')}\n징후: {signals}\n사진: {image_description}"}
                 ]
             )
-            raw_content = str(res.choices[0].message.content or "").strip()
-            if raw_content.startswith("```"):
-                raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            ans = json.loads(raw_content)
-            queries = ans.get("queries") or []
+            raw_content = str(completion.response.choices[0].message.content or "").strip()
+            ans = QueryExpansion.model_validate(parse_json_object(raw_content))
+            queries = ans.queries[:3]
             if queries:
                 return {"search_query": " ".join(queries)}
         except Exception as e:
@@ -111,14 +112,13 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
     ) or "unknown plant"
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     
-    if not openai_key or not docs:
+    if not docs or (
+        not openai_key
+        and not (settings.LLM_FALLBACK_ENABLED and settings.LOCAL_LLM_AUXILIARY_ENABLED)
+    ):
         return {"retrieved_docs": docs[:4]}
         
     try:
-        import json as _json
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_key, timeout=20.0, max_retries=0)
-
         # 후보 문서 전체를 한 프롬프트에 담아 1회 호출로 배치 채점한다.
         # (문서당 개별 호출 대비 지연/비용을 문서 수만큼 절감)
         doc_blocks = []
@@ -127,10 +127,14 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
             content = str(doc.get("content") or "")[:1200]
             doc_blocks.append(f"[문서 {idx}]\n제목: {title}\n내용: {content}")
 
-        res = client.chat.completions.create(
-            model=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+        completion = chat_completion(
+            primary_model=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+            local_model=settings.LOCAL_CHAT_MODEL,
             temperature=0.0,
             response_format={"type": "json_object"},
+            primary_timeout=20.0,
+            max_tokens=400,
+            allow_local_fallback=settings.LOCAL_LLM_AUXILIARY_ENABLED,
             messages=[
                 {
                     "role": "system",
@@ -148,9 +152,9 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
                 }
             ]
         )
-        raw = str(res.choices[0].message.content or "").strip()
-        parsed = _json.loads(raw)
-        relevant_indices = parsed.get("relevant") or []
+        raw = str(completion.response.choices[0].message.content or "").strip()
+        parsed = RerankDecision.model_validate(parse_json_object(raw))
+        relevant_indices = parsed.relevant
 
         filtered_docs = []
         for idx in relevant_indices:

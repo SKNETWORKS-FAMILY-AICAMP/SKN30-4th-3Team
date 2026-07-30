@@ -15,6 +15,7 @@ export const SELECTED_GARDEN_ID_KEY = "farmhani_selected_garden_id";
 export const LAST_SESSION_ID_KEY = "farmhani_last_session_id";
 export const PENDING_DIAGNOSIS_QUESTION_KEY = "farmhani_pending_diagnosis_question";
 export const CHAT_RESPONSE_MODE_KEY = "farmhani_chat_response_mode";
+export const CHAT_MODEL_SELECTION_KEY = "farmhani_chat_model_selection";
 export const CHAT_MEMORY_KEY = "farmhani_chat_memory";
 export const USER_PROFILE_PHOTO_KEY = "farmhani_user_profile_photo";
 export const NOTIFICATION_ENABLED_KEY = "farmhani_notification_enabled";

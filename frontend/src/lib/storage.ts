@@ -1,7 +1,8 @@
 // 선택 식물/세션/채팅 메모리/프로필 사진 로컬스토리지 유틸리티
-import type { ChatMemoryMessage, ChatResponseMode } from "../types";
+import type { ChatMemoryMessage, ChatModelSelection, ChatResponseMode } from "../types";
 import {
   CHAT_MEMORY_KEY,
+  CHAT_MODEL_SELECTION_KEY,
   CHAT_RESPONSE_MODE_KEY,
   LAST_SESSION_ID_KEY,
   NOTIFICATION_ENABLED_KEY,
@@ -10,6 +11,8 @@ import {
   USER_PROFILE_PHOTO_KEY,
   WATERING_NOTIFIED_DATE_KEY
 } from "./constants";
+
+const CHAT_MODEL_SELECTIONS: ChatModelSelection[] = ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "local"];
 
 export function setSelectedPlantId(plantId: string) {
   localStorage.setItem(SELECTED_PLANT_ID_KEY, plantId);
@@ -40,6 +43,15 @@ export function setLastSessionId(sessionId?: string) {
 export function getStoredChatResponseMode(): ChatResponseMode {
   const value = localStorage.getItem(CHAT_RESPONSE_MODE_KEY);
   return value === "companion" ? "companion" : "expert";
+}
+
+export function getStoredChatModelSelection(): ChatModelSelection | null {
+  const value = localStorage.getItem(CHAT_MODEL_SELECTION_KEY) as ChatModelSelection | null;
+  return value && CHAT_MODEL_SELECTIONS.includes(value) ? value : null;
+}
+
+export function setStoredChatModelSelection(value: ChatModelSelection) {
+  localStorage.setItem(CHAT_MODEL_SELECTION_KEY, value);
 }
 
 export function getLastSessionStorageKey(plantId = getSelectedPlantId(), mode = getStoredChatResponseMode()) {

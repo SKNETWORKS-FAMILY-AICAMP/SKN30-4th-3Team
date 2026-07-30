@@ -117,10 +117,16 @@ export type PlantCareChatResponse = {
   safetyNotice?: string;
   sessionId?: string;
   messageId?: string;
+  llmProvider?: ChatLLMProvider;
+  llmModel?: string;
   // 도메인 확장 — 선택적(하위호환). 백엔드가 채우면 프론트가 자동 렌더.
   pestDiagnosis?: PestDiagnosis[];
   pesticideGuidance?: PesticideGuidance[];
 };
+
+export type ChatLLMProvider = "openai" | "local";
+export type OpenAIChatModel = "gpt-5.4" | "gpt-5.5" | "gpt-5.6-sol";
+export type ChatModelSelection = OpenAIChatModel | "local";
 
 export type ChatProgressEvent = {
   step: number;
@@ -152,6 +158,17 @@ export type WateringReminder = {
 export type ChatModelInfo = {
   chatModel: string;
   visionModel: string;
+  fallbackEnabled: boolean;
+  localChatModel?: string | null;
+  localVisionModel?: string | null;
+  localAuxiliaryEnabled: boolean;
+  primaryCircuit: {
+    state: "closed" | "open";
+    failureCount: number;
+    retryAfterSeconds: number;
+  };
+  primaryConfigured: boolean;
+  availableOpenAIModels: OpenAIChatModel[];
 };
 
 export type ChatSession = {

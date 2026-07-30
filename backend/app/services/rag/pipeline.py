@@ -102,6 +102,8 @@ def _build_initial_state(
     response_mode: str,
     recent_messages: Optional[List[Dict[str, Any]]],
     session_id: Optional[str],
+    llm_provider: Optional[str],
+    llm_model: Optional[str],
 ) -> Dict[str, Any]:
     return {
         "db_client": db_client,
@@ -113,6 +115,8 @@ def _build_initial_state(
         "photo_id": photo_id,
         "question": question,
         "response_mode": response_mode if response_mode in {"expert", "companion"} else "expert",
+        "llm_provider": llm_provider,
+        "llm_model": llm_model,
         "request_chat_history": recent_messages or [],
         "new_session": new_session,
         "target_session_id": session_id
@@ -123,6 +127,8 @@ def _final_answer_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
     final_answer = dict(state["final_answer"])
     final_answer["sessionId"] = state.get("session_id")
     final_answer["messageId"] = state.get("message_id")
+    final_answer["llmProvider"] = state.get("llm_provider_used")
+    final_answer["llmModel"] = state.get("llm_model_used")
     return final_answer
 
 
@@ -137,12 +143,15 @@ def run_rag_workflow(
     response_mode: str = "expert",
     recent_messages: Optional[List[Dict[str, Any]]] = None,
     session_id: Optional[str] = None,
-    garden_id: Optional[str] = None
+    garden_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     app = _build_workflow_app()
     initial_state = _build_initial_state(
         db_client, user_id, plant_id, garden_id, care_log_id, photo_id,
-        question, new_session, response_mode, recent_messages, session_id
+        question, new_session, response_mode, recent_messages, session_id,
+        llm_provider, llm_model
     )
     result = app.invoke(initial_state)
     return _final_answer_from_state(result)
@@ -159,7 +168,9 @@ def run_rag_workflow_stream(
     response_mode: str = "expert",
     recent_messages: Optional[List[Dict[str, Any]]] = None,
     session_id: Optional[str] = None,
-    garden_id: Optional[str] = None
+    garden_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ):
     """
     파이프라인을 노드 단위로 실행하며 진행 이벤트를 순차 반환하는 제너레이터.
@@ -171,7 +182,8 @@ def run_rag_workflow_stream(
     app = _build_workflow_app()
     initial_state = _build_initial_state(
         db_client, user_id, plant_id, garden_id, care_log_id, photo_id,
-        question, new_session, response_mode, recent_messages, session_id
+        question, new_session, response_mode, recent_messages, session_id,
+        llm_provider, llm_model
     )
 
     node_order = {name: idx for idx, (name, _) in enumerate(WORKFLOW_NODE_LABELS)}

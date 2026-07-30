@@ -661,6 +661,16 @@ components:
           enum: [expert, companion]
           default: expert
           description: expert는 전문가 상담 말투, companion은 등록한 식물과 대화하는 친근한 말투
+        llmProvider:
+          type: string
+          enum: [openai, local]
+          nullable: true
+          description: 답변 생성 공급자. 생략하면 서버 기본 OpenAI 우선/fallback 정책을 사용합니다.
+        llmModel:
+          type: string
+          enum: [gpt-5.4, gpt-5.5, gpt-5.6-sol]
+          nullable: true
+          description: OpenAI 선택 시 사용할 허용 모델. local 선택 시에는 전달하지 않습니다.
         question:
           type: string
           example: 잎 끝이 마르고 아래쪽 잎이 노랗게 변했어요.
@@ -694,9 +704,18 @@ components:
         messageId:
           type: string
           format: uuid
+        llmProvider:
+          type: string
+          enum: [openai, local]
+          nullable: true
+          description: 실제 답변 생성에 사용된 공급자
+        llmModel:
+          type: string
+          nullable: true
+          description: 실제 답변 생성에 사용된 모델 ID
     ChatModelInfo:
       type: object
-      required: [chatModel, visionModel]
+      required: [chatModel, visionModel, fallbackEnabled, localAuxiliaryEnabled, primaryCircuit, primaryConfigured, availableOpenAIModels]
       properties:
         chatModel:
           type: string
@@ -704,6 +723,40 @@ components:
         visionModel:
           type: string
           example: gpt-4o-mini
+        fallbackEnabled:
+          type: boolean
+          description: OpenAI 장애 시 로컬 OpenAI 호환 모델로 전환하는 기능의 활성화 여부
+        localChatModel:
+          type: string
+          nullable: true
+          example: qwen3-vl:4b-instruct
+        localVisionModel:
+          type: string
+          nullable: true
+          example: qwen3-vl:4b-instruct
+        localAuxiliaryEnabled:
+          type: boolean
+          description: 검색어 확장과 문서 재정렬에도 로컬 모델을 사용할지 여부
+        primaryCircuit:
+          type: object
+          required: [state, failureCount, retryAfterSeconds]
+          properties:
+            state:
+              type: string
+              enum: [closed, open]
+            failureCount:
+              type: integer
+            retryAfterSeconds:
+              type: number
+              format: float
+        primaryConfigured:
+          type: boolean
+          description: OpenAI API 키 설정 여부
+        availableOpenAIModels:
+          type: array
+          items:
+            type: string
+            enum: [gpt-5.4, gpt-5.5, gpt-5.6-sol]
     Citation:
       type: object
       required: [sourceId, title]

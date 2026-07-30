@@ -27,6 +27,8 @@ class PlantCareChatRequest(BaseModel):
     sessionId: Optional[UUID] = None
     newSession: bool = False
     responseMode: Literal["expert", "companion"] = "expert"
+    llmProvider: Optional[Literal["openai", "local"]] = None
+    llmModel: Optional[Literal["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]] = None
     recentMessages: List[ChatMemoryMessage] = Field(default_factory=list)
     question: str = Field(..., min_length=1)
 
@@ -36,6 +38,8 @@ class PlantCareChatRequest(BaseModel):
             raise ValueError("plantId와 gardenId 중 하나만 입력해야 합니다.")
         if self.gardenId and self.careLogId:
             raise ValueError("텃밭 상담에서는 식물별 관리일지를 직접 지정할 수 없습니다.")
+        if self.llmProvider == "local" and self.llmModel is not None:
+            raise ValueError("로컬 모델을 선택할 때는 llmModel을 지정하지 않습니다.")
         return self
 
 
@@ -48,11 +52,20 @@ class PlantCareChatResponse(BaseModel):
     safetyNotice: Optional[str] = None
     sessionId: Optional[UUID] = None
     messageId: Optional[UUID] = None
+    llmProvider: Optional[Literal["openai", "local"]] = None
+    llmModel: Optional[str] = None
 
 
 class ChatModelInfo(BaseModel):
     chatModel: str
     visionModel: str
+    fallbackEnabled: bool = False
+    localChatModel: Optional[str] = None
+    localVisionModel: Optional[str] = None
+    localAuxiliaryEnabled: bool = False
+    primaryCircuit: dict = Field(default_factory=dict)
+    primaryConfigured: bool = False
+    availableOpenAIModels: List[str] = Field(default_factory=list)
 
 
 class ChatFeedbackRequest(BaseModel):

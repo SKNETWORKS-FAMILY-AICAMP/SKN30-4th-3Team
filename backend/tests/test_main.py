@@ -2,9 +2,11 @@ import pytest
 import uuid
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from app.main import app
 from app.auth.security import get_current_user
 from app.db.session import get_supabase_client
+from app.schemas.chat import PlantCareChatRequest
 
 # 테스트용 고정 사용자 UUID
 TEST_USER_ID = uuid.UUID("d3b07384-d113-49c3-a558-1ec114a84d41")
@@ -580,6 +582,33 @@ def test_consult_requires_exactly_one_target():
     })
     assert missing.status_code == 422
     assert duplicated.status_code == 422
+
+
+def test_consult_rejects_unapproved_or_conflicting_model_selection():
+    plant_id = "d3b07384-d113-49c3-a558-1ec114a84d41"
+    with pytest.raises(ValidationError):
+        PlantCareChatRequest(
+            plantId=plant_id,
+            llmProvider="openai",
+            llmModel="arbitrary-model",
+            question="상담해 주세요.",
+        )
+    with pytest.raises(ValidationError):
+        PlantCareChatRequest(
+            plantId=plant_id,
+            llmProvider="local",
+            llmModel="gpt-5.4",
+            question="상담해 주세요.",
+        )
+
+
+def test_chat_model_info_exposes_selectable_models():
+    response = client.get("/api/v1/chat/model-info")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["availableOpenAIModels"] == ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
+    assert isinstance(data["primaryConfigured"], bool)
 
 def test_create_signed_upload_url():
     payload = {
