@@ -1,0 +1,38 @@
+{
+  "matched": {
+    "귀리": "Avena sativa L.",
+    "기장": "Panicum miliaceum L.",
+    "다래": "Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.",
+    "담배": "Nicotiana tabacum L.",
+    "대추": "Ziziphus jujuba Mill.",
+    "동부": "Vigna unguiculata (L.) Walp.",
+    "맥문동": "Liriope muscari (Decne.) L.H.Bailey",
+    "머위": "Petasites japonicus (Siebold & Zucc.) Maxim.",
+    "민들레": "Taraxacum mongolicum Hand.-Mazz.",
+    "박": "Lagenaria siceraria (Molina) Standl.",
+    "밤": "Castanea crenata Siebold & Zucc.",
+    "보리": "Hordeum vulgare L.",
+    "붓꽃": "Iris sanguinea Donn ex Hornem.",
+    "비름": "Amaranthus tricolor L.",
+    "사과": "Malus domestica (Suckow) Borkh.",
+    "삽주": "Atractylodes ovata (Thunb.) DC.",
+    "시호": "Bupleurum komarovianum Lincz.",
+    "쑥": "Artemisia indica Willd.",
+    "오갈피": "Eleutherococcus sessiliflorus (Rupr. & Maxim.) S.Y.Hu",
+    "원추리": "Hemerocallis fulva (L.) L.",
+    "쥐오줌풀(길초근)": "Valeriana fauriei Briq.",
+    "지치": "Lithospermum murasaki Siebold",
+    "진달래": "Rhododendron mucronulatum Turcz.",
+    "참나물": "Pimpinella brachycarpa (Kom.) Nakai",
+    "천궁": "Ligusticum officinale (Makino) Kitag.",
+    "초피": "Zanthoxylum piperitum (L.) DC.",
+    "택사": "Alisma canaliculatum A.Braun & C.D.Bouché",
+    "패랭이꽃": "Dianthus chinensis L.",
+    "팬지": "Viola × wittrockiana Gams",
+    "협죽도": "Nerium oleander L."
+  },
+  "unmatched": [
+    "고무나무",
+    "칸나"
+  ]
+}
