@@ -127,7 +127,9 @@ class AgentState(TypedDict):
     # 입력 정보
     db_client: Client
     user_id: str
-    plant_id: str
+    plant_id: Optional[str]
+    garden_id: Optional[str]
+    context_type: str
     care_log_id: Optional[str]
     photo_id: Optional[str]
     question: str

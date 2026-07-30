@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Plant Care RAG Chat"])
 
 
-def fallback_session_title(db: Client, plant_id: str | None, created_at: str) -> str:
+def fallback_session_title(db: Client, plant_id: str | None, created_at: str, garden_id: str | None = None) -> str:
     if plant_id:
         try:
             plant = db.table("plants").select("name,species").eq("id", plant_id).limit(1).execute()
@@ -38,6 +38,13 @@ def fallback_session_title(db: Client, plant_id: str | None, created_at: str) ->
                 label = plant.data[0].get("name") or plant.data[0].get("species")
                 if label:
                     return f"{label} 상담"
+        except Exception:
+            pass
+    if garden_id:
+        try:
+            garden = db.table("gardens").select("name").eq("id", garden_id).limit(1).execute()
+            if garden.data and garden.data[0].get("name"):
+                return f"{garden.data[0]['name']} 텃밭 상담"
         except Exception:
             pass
     try:
@@ -66,7 +73,8 @@ def consult_plant_care(
         final_answer = run_rag_workflow(
             db_client=db,
             user_id=str(current_user_id),
-            plant_id=str(request.plantId),
+            plant_id=str(request.plantId) if request.plantId else None,
+            garden_id=str(request.gardenId) if request.gardenId else None,
             care_log_id=str(request.careLogId) if request.careLogId else None,
             photo_id=str(request.photoId) if request.photoId else None,
             question=request.question,
@@ -128,7 +136,8 @@ def consult_plant_care_stream(
             for event in run_rag_workflow_stream(
                 db_client=db,
                 user_id=str(current_user_id),
-                plant_id=str(request.plantId),
+                plant_id=str(request.plantId) if request.plantId else None,
+                garden_id=str(request.gardenId) if request.gardenId else None,
                 care_log_id=str(request.careLogId) if request.careLogId else None,
                 photo_id=str(request.photoId) if request.photoId else None,
                 question=request.question,
@@ -157,6 +166,7 @@ def consult_plant_care_stream(
 
 @router.get("/sessions", response_model=List[ChatSession], summary="상담 세션 목록 조회")
 def list_chat_sessions(
+    gardenId: uuid.UUID | None = Query(None),
     plantId: uuid.UUID | None = Query(None, description="특정 식물의 상담 세션만 조회"),
     responseMode: str | None = Query(None, pattern="^(expert|companion)$", description="상담 모드별 세션 필터"),
     current_user_id: uuid.UUID = Depends(get_current_user),
@@ -167,6 +177,8 @@ def list_chat_sessions(
             query = db.table("chat_sessions").select("*").eq("user_id", str(current_user_id))
             if plantId:
                 query = query.eq("plant_id", str(plantId))
+            if gardenId:
+                query = query.eq("garden_id", str(gardenId))
             if responseMode:
                 if use_mode_column:
                     query = query.eq("response_mode", responseMode)
@@ -185,7 +197,8 @@ def list_chat_sessions(
                 id=uuid.UUID(item["id"]),
                 userId=uuid.UUID(item["user_id"]),
                 plantId=uuid.UUID(item["plant_id"]) if item.get("plant_id") else None,
-                title=item.get("title") or fallback_session_title(db, item.get("plant_id"), item.get("created_at", "")),
+                gardenId=uuid.UUID(item["garden_id"]) if item.get("garden_id") else None,
+                title=item.get("title") or fallback_session_title(db, item.get("plant_id"), item.get("created_at", ""), item.get("garden_id")),
                 createdAt=datetime.fromisoformat(item["created_at"])
             ))
         return sessions

@@ -23,6 +23,8 @@ IF NOT EXISTS vector;
             sunlight    TEXT,
             soil_type   TEXT,
             image_url   TEXT,
+            cultivation_type TEXT NOT NULL DEFAULT 'mixed' CHECK (cultivation_type IN ('single', 'mixed')),
+            representative_crop TEXT,
             created_at  TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
         );
     CREATE TABLE IF NOT EXISTS public.plants
@@ -57,13 +59,17 @@ IF NOT EXISTS vector;
     CREATE TABLE IF NOT EXISTS public.plant_photos
         (
             id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            plant_id UUID NOT NULL REFERENCES public.plants(id) ON
+            plant_id UUID REFERENCES public.plants(id) ON
             DELETE
-                CASCADE                                                                           ,
+                CASCADE,
+                garden_id UUID REFERENCES public.gardens(id) ON
+            DELETE
+                CASCADE,
                 storage_path TEXT NOT NULL                                                        ,
                 note TEXT                                                                         ,
                 captured_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL );
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+                CONSTRAINT plant_photos_exactly_one_owner CHECK (num_nonnulls(plant_id, garden_id) = 1) );
     -- 6. chat_sessions (식물별 AI 상담 세션 테이블)
     CREATE TABLE IF NOT EXISTS public.chat_sessions
         (
@@ -72,6 +78,10 @@ IF NOT EXISTS vector;
             DELETE
                 CASCADE,
                 plant_id UUID REFERENCES public.plants(id) ON
+            DELETE
+            SET
+                NULL,
+                garden_id UUID REFERENCES public.gardens(id) ON
             DELETE
             SET
                 NULL,
@@ -245,15 +255,27 @@ IF NOT EXISTS vector;
             public.plants.id      = public.care_logs.plant_id
         AND public.plants.user_id = auth.uid() ));
     -- 4) 사진: 본인 식물의 사진만 CRUD 가능
-    CREATE POLICY "Allow individual CRUD on plant photos through plant owner" ON public.plant_photos USING (EXISTS
-    (
-        SELECT
-            1
-        FROM
-            public.plants
-        WHERE
-            public.plants.id      = public.plant_photos.plant_id
-        AND public.plants.user_id = auth.uid() ));
+    CREATE POLICY "Allow individual CRUD on plant photos through plant owner" ON public.plant_photos USING (
+        (plant_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM public.plants
+            WHERE public.plants.id = public.plant_photos.plant_id
+              AND public.plants.user_id = auth.uid()
+        )) OR (garden_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM public.gardens
+            WHERE public.gardens.id = public.plant_photos.garden_id
+              AND public.gardens.user_id = auth.uid()
+        ))
+    ) WITH CHECK (
+        (plant_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM public.plants
+            WHERE public.plants.id = public.plant_photos.plant_id
+              AND public.plants.user_id = auth.uid()
+        )) OR (garden_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM public.gardens
+            WHERE public.gardens.id = public.plant_photos.garden_id
+              AND public.gardens.user_id = auth.uid()
+        ))
+    );
     -- 5) 채팅 세션: 본인 세션만 CRUD 가능
     CREATE POLICY "Allow individual CRUD on own chat sessions" ON public.chat_sessions USING (auth.uid() = user_id);
     -- 6) 채팅 메시지: 본인 세션의 메시지만 CRUD 가능

@@ -10,6 +10,7 @@ from app.auth.security import get_current_user
 from app.db.session import get_supabase_client, get_supabase_service_client
 from app.core.config import settings
 from app.schemas.plant import PlantPhoto
+from app.schemas.garden import GardenPhoto
 from app.schemas.upload import UploadSignedUrlRequest, UploadSignedUrlResponse
 
 logger = logging.getLogger(__name__)
@@ -166,3 +167,67 @@ async def upload_plant_photo(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="식물 사진 업로드 중 오류가 발생했습니다."
         )
+
+
+@router.post("/garden-photo", response_model=GardenPhoto, status_code=status.HTTP_201_CREATED, summary="텃밭 사진 파일 업로드 및 메타데이터 등록")
+async def upload_garden_photo(
+    gardenId: uuid.UUID = Form(..., description="사진을 연결할 텃밭 UUID"),
+    note: str | None = Form(None, description="사진 메모"),
+    capturedAt: str | None = Form(None, description="촬영 시간 ISO 문자열"),
+    file: UploadFile = File(..., description="업로드할 텃밭 사진 파일"),
+    current_user_id: uuid.UUID = Depends(get_current_user),
+    db: Client = Depends(get_supabase_client),
+):
+    try:
+        garden_check = await run_in_threadpool(
+            lambda: db.table("gardens").select("id").eq("id", str(gardenId)).eq("user_id", str(current_user_id)).execute()
+        )
+        if not garden_check.data:
+            raise HTTPException(status_code=404, detail="텃밭을 찾을 수 없거나 해당 텃밭에 대한 권한이 없습니다.")
+        if file.content_type and file.content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+            raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다. (jpeg, png, webp, gif만 허용)")
+
+        _, ext = os.path.splitext(file.filename or "")
+        safe_ext = ext if ext.lower() in ALLOWED_IMAGE_EXTENSIONS else ".jpg"
+        storage_path = f"users/{current_user_id}/gardens/{gardenId}/{uuid.uuid4()}{safe_ext}"
+        content = await file.read(MAX_PHOTO_UPLOAD_BYTES + 1)
+        if not content:
+            raise HTTPException(status_code=400, detail="업로드할 사진 파일이 비어 있습니다.")
+        if len(content) > MAX_PHOTO_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="사진 파일이 너무 큽니다. 8MB 이하로 업로드해주세요.")
+
+        service_db = get_supabase_service_client()
+        await run_in_threadpool(
+            lambda: service_db.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+                storage_path,
+                content,
+                file_options={"content-type": file.content_type or "application/octet-stream", "upsert": "false"},
+            )
+        )
+        captured_at = datetime.now(timezone.utc)
+        if capturedAt:
+            captured_at = datetime.fromisoformat(capturedAt.replace("Z", "+00:00"))
+        payload = {
+            "plant_id": None,
+            "garden_id": str(gardenId),
+            "storage_path": storage_path,
+            "note": note,
+            "captured_at": captured_at.isoformat(),
+        }
+        response = await run_in_threadpool(lambda: db.table("plant_photos").insert(payload).execute())
+        if not response.data:
+            raise HTTPException(status_code=500, detail="텃밭 사진 메타데이터 등록에 실패했습니다.")
+        item = response.data[0]
+        return GardenPhoto(
+            id=uuid.UUID(item["id"]),
+            gardenId=uuid.UUID(item["garden_id"]),
+            storagePath=item["storage_path"],
+            capturedAt=datetime.fromisoformat(item["captured_at"]),
+            note=item.get("note"),
+            createdAt=datetime.fromisoformat(item["created_at"]),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("텃밭 사진 업로드 중 오류 발생")
+        raise HTTPException(status_code=500, detail="텃밭 사진 업로드 중 오류가 발생했습니다.")

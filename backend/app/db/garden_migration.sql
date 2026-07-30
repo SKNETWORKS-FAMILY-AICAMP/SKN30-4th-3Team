@@ -10,11 +10,17 @@ CREATE TABLE IF NOT EXISTS public.gardens (
     sunlight    TEXT,
     soil_type   TEXT,
     image_url   TEXT,
+    cultivation_type TEXT NOT NULL DEFAULT 'mixed' CHECK (cultivation_type IN ('single', 'mixed')),
+    representative_crop TEXT,
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 ALTER TABLE public.plants
     ADD COLUMN IF NOT EXISTS garden_id UUID REFERENCES public.gardens(id) ON DELETE SET NULL;
+
+ALTER TABLE public.gardens
+    ADD COLUMN IF NOT EXISTS cultivation_type TEXT NOT NULL DEFAULT 'mixed',
+    ADD COLUMN IF NOT EXISTS representative_crop TEXT;
 
 CREATE INDEX IF NOT EXISTS gardens_user_id_idx ON public.gardens(user_id);
 CREATE INDEX IF NOT EXISTS plants_garden_id_idx ON public.plants(garden_id);

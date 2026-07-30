@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createGarden, deleteGarden, getPlants, listGardens, updateGarden, updatePlant } from "../../api";
+import { createGarden, deleteGarden, getPlants, listGardens, storagePathToPublicUrl, updateGarden, updatePlant, uploadGardenPhoto } from "../../api";
 import type { DesignPage } from "../../lib/constants";
 import { setSelectedGardenId } from "../../lib/storage";
 import type { Garden, Plant } from "../../types";
@@ -10,8 +10,10 @@ interface GardenPageProps {
   onAuthError: (error: unknown) => boolean;
 }
 
-const emptyForm = { name: "", location: "", sunlight: "", soilType: "" };
-const emptyEditForm = { name: "", location: "", sunlight: "", soilType: "", description: "" };
+type GardenForm = { name: string; location: string; sunlight: string; soilType: string; cultivationType: "single" | "mixed"; representativeCrop: string };
+type GardenEditForm = GardenForm & { description: string };
+const emptyForm: GardenForm = { name: "", location: "", sunlight: "", soilType: "", cultivationType: "mixed", representativeCrop: "" };
+const emptyEditForm: GardenEditForm = { ...emptyForm, description: "" };
 
 export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
   const [gardens, setGardens] = useState<Garden[]>([]);
@@ -24,6 +26,8 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState(emptyEditForm);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [createPhoto, setCreatePhoto] = useState<File | null>(null);
+  const [uploadingGardenId, setUploadingGardenId] = useState<string | null>(null);
 
   async function refresh() {
     const [gardenRows, plantRows] = await Promise.all([listGardens(), getPlants()]);
@@ -58,13 +62,22 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
     setBusy(true);
     setError("");
     try {
-      await createGarden({
+      const garden = await createGarden({
         name,
         location: form.location.trim() || undefined,
         sunlight: form.sunlight.trim() || undefined,
-        soilType: form.soilType.trim() || undefined
+        soilType: form.soilType.trim() || undefined,
+        cultivationType: form.cultivationType,
+        representativeCrop: form.representativeCrop.trim() || undefined
       });
+      if (createPhoto) {
+        const uploaded = await uploadGardenPhoto(garden.id, createPhoto, "텃밭 대표 사진");
+        const imageUrl = storagePathToPublicUrl(uploaded.storagePath);
+        if (!imageUrl) throw new Error("업로드한 사진의 대표 이미지 URL을 생성하지 못했습니다.");
+        await updateGarden(garden.id, { imageUrl });
+      }
       setForm(emptyForm);
+      setCreatePhoto(null);
       setCreating(false);
       await refresh();
     } catch (caughtError) {
@@ -72,6 +85,26 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
       setError(caughtError instanceof Error ? caughtError.message : "텃밭을 만들지 못했습니다.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleGardenPhoto(gardenId: string, file?: File) {
+    if (!file || busy) return;
+    setBusy(true);
+    setUploadingGardenId(gardenId);
+    setError("");
+    try {
+      const uploaded = await uploadGardenPhoto(gardenId, file, "텃밭 대표 사진");
+      const imageUrl = storagePathToPublicUrl(uploaded.storagePath);
+      if (!imageUrl) throw new Error("업로드한 사진의 대표 이미지 URL을 생성하지 못했습니다.");
+      await updateGarden(gardenId, { imageUrl });
+      await refresh();
+    } catch (caughtError) {
+      if (onAuthError(caughtError)) return;
+      setError(caughtError instanceof Error ? caughtError.message : "텃밭 사진을 등록하지 못했습니다.");
+    } finally {
+      setBusy(false);
+      setUploadingGardenId(null);
     }
   }
 
@@ -99,7 +132,9 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
       location: garden.location || "",
       sunlight: garden.sunlight || "",
       soilType: garden.soilType || "",
-      description: garden.description || ""
+      description: garden.description || "",
+      cultivationType: garden.cultivationType || "mixed",
+      representativeCrop: garden.representativeCrop || ""
     });
   }
 
@@ -115,7 +150,9 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
         location: editForm.location.trim() || undefined,
         sunlight: editForm.sunlight.trim() || undefined,
         soilType: editForm.soilType.trim() || undefined,
-        description: editForm.description.trim() || undefined
+        description: editForm.description.trim() || undefined,
+        cultivationType: editForm.cultivationType,
+        representativeCrop: editForm.representativeCrop.trim() || undefined
       });
       setEditingId(null);
       await refresh();
@@ -170,9 +207,17 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
             <label className="field"><span>위치</span><input maxLength={60} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="예: 남향 베란다" value={form.location} /></label>
             <label className="field"><span>일조 환경</span><input maxLength={40} onChange={(event) => setForm({ ...form, sunlight: event.target.value })} placeholder="예: 오전 직사광선" value={form.sunlight} /></label>
             <label className="field"><span>토양</span><input maxLength={40} onChange={(event) => setForm({ ...form, soilType: event.target.value })} placeholder="예: 상토 + 마사토" value={form.soilType} /></label>
+            <label className="field"><span>텃밭 유형</span><select onChange={(event) => setForm({ ...form, cultivationType: event.target.value as "single" | "mixed" })} value={form.cultivationType}><option value="single">단일 작물 텃밭</option><option value="mixed">여러 작물 텃밭</option></select></label>
+            <label className="field"><span>대표 작물 {form.cultivationType === "single" && <b aria-label="필수">*</b>}</span><input list="garden-crop-options" maxLength={80} onChange={(event) => setForm({ ...form, representativeCrop: event.target.value })} placeholder={form.cultivationType === "single" ? "예: 방울토마토" : "예: 상추 또는 대표 작물"} required={form.cultivationType === "single"} value={form.representativeCrop} /></label>
           </div>
+          <datalist id="garden-crop-options">{[...new Set(plants.map((plant) => plant.displaySpecies || plant.name).filter(Boolean))].map((name) => <option key={name} value={name} />)}</datalist>
+          <label className={createPhoto ? "file-field has-file" : "file-field"}>
+            <span><strong>{createPhoto ? "다른 텃밭 사진 선택" : "텃밭 대표 사진 추가"}</strong><small>JPG, PNG 또는 WEBP · 최대 8MB</small></span>
+            <input accept="image/jpeg,image/png,image/webp" onChange={(event) => setCreatePhoto(event.target.files?.[0] || null)} type="file" />
+            {createPhoto && <em>{createPhoto.name}</em>}
+          </label>
           <div className="form-actions">
-            <button className="button button-secondary" type="button" onClick={() => { setCreating(false); setForm(emptyForm); }}>취소</button>
+            <button className="button button-secondary" type="button" onClick={() => { setCreating(false); setForm(emptyForm); setCreatePhoto(null); }}>취소</button>
             <button className="button button-primary" type="submit" disabled={!form.name.trim() || busy}>{busy ? "만드는 중…" : "텃밭 만들기"}</button>
           </div>
         </form>
@@ -187,8 +232,12 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
             const addable = assignableTo(garden.id);
             return (
               <article className="garden-card" key={garden.id}>
-                <div className="garden-card-media" aria-hidden="true">
+                <div className="garden-card-media">
                   {garden.imageUrl ? <img src={garden.imageUrl} alt="" /> : <span className="material-symbols-outlined">potted_plant</span>}
+                  <label className="garden-photo-action">
+                    <span>{uploadingGardenId === garden.id ? "업로드 중…" : garden.imageUrl ? "사진 변경" : "사진 추가"}</span>
+                    <input accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={(event) => { void handleGardenPhoto(garden.id, event.target.files?.[0]); event.target.value = ""; }} type="file" />
+                  </label>
                 </div>
                 <div className="garden-card-body">
                   {editingId === garden.id ? (
@@ -198,6 +247,8 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
                       <label className="field"><span>일조 환경</span><input maxLength={40} onChange={(event) => setEditForm({ ...editForm, sunlight: event.target.value })} value={editForm.sunlight} /></label>
                       <label className="field"><span>토양</span><input maxLength={40} onChange={(event) => setEditForm({ ...editForm, soilType: event.target.value })} value={editForm.soilType} /></label>
                       <label className="field"><span>설명</span><input maxLength={80} onChange={(event) => setEditForm({ ...editForm, description: event.target.value })} value={editForm.description} /></label>
+                      <label className="field"><span>텃밭 유형</span><select onChange={(event) => setEditForm({ ...editForm, cultivationType: event.target.value as "single" | "mixed" })} value={editForm.cultivationType}><option value="single">단일 작물 텃밭</option><option value="mixed">여러 작물 텃밭</option></select></label>
+                      <label className="field"><span>대표 작물 {editForm.cultivationType === "single" && <b aria-label="필수">*</b>}</span><input list="garden-crop-options" maxLength={80} onChange={(event) => setEditForm({ ...editForm, representativeCrop: event.target.value })} required={editForm.cultivationType === "single"} value={editForm.representativeCrop} /></label>
                       <div className="form-actions">
                         <button className="button button-secondary button-small" type="button" onClick={() => setEditingId(null)}>취소</button>
                         <button className="button button-primary button-small" type="submit" disabled={!editForm.name.trim() || busy}>{busy ? "저장 중…" : "저장"}</button>
@@ -213,6 +264,7 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
                     </div>
                   </div>
                   <p className="garden-card-meta">{garden.location || "위치 미등록"} · 작물 {members.length}종</p>
+                  <p className="garden-cultivation-summary"><strong>{garden.cultivationType === "single" ? "단일 작물" : "여러 작물"}</strong>{garden.representativeCrop && <span>대표 작물 · {garden.representativeCrop}</span>}</p>
                   {garden.description && <p className="garden-card-desc">{garden.description}</p>}
                   <dl className="garden-card-facts">
                     {garden.sunlight && <div><dt>일조</dt><dd>{garden.sunlight}</dd></div>}

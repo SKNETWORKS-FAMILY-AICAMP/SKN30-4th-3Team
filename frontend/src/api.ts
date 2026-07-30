@@ -11,6 +11,7 @@ import type {
   ChatSession,
   ChecklistTask,
   Garden,
+  GardenPhoto,
   Plant,
   PlantCareChatResponse,
   PlantCatalogItem,
@@ -395,12 +396,13 @@ export async function listGardens(): Promise<Garden[]> {
 }
 
 export async function createGarden(
-  input: Pick<Garden, "name"> & Partial<Pick<Garden, "location" | "description" | "sunlight" | "soilType">>
+  input: Pick<Garden, "name"> & Partial<Pick<Garden, "location" | "description" | "sunlight" | "soilType" | "cultivationType" | "representativeCrop">>
 ): Promise<Garden> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const garden: Garden = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
+      cultivationType: input.cultivationType || "mixed",
       ...input
     };
     saveLocalGardens([garden, ...loadLocalGardens()]);
@@ -414,7 +416,7 @@ export async function createGarden(
 
 export async function updateGarden(
   gardenId: string,
-  input: Partial<Pick<Garden, "name" | "location" | "description" | "sunlight" | "soilType">>
+  input: Partial<Pick<Garden, "name" | "location" | "description" | "sunlight" | "soilType" | "imageUrl" | "cultivationType" | "representativeCrop">>
 ): Promise<Garden> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const gardens = loadLocalGardens();
@@ -656,10 +658,53 @@ export async function uploadPlantPhoto(plantId: string, file: File, note?: strin
   }
 }
 
+export async function uploadGardenPhoto(gardenId: string, file: File, note?: string): Promise<GardenPhoto> {
+  if (file.size > MAX_PHOTO_UPLOAD_BYTES) {
+    throw new Error("사진 파일이 너무 큽니다. 8MB 이하로 업로드해주세요.");
+  }
+
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    return {
+      id: crypto.randomUUID(),
+      gardenId,
+      storagePath: await fileToDataUrl(file),
+      capturedAt: new Date().toISOString(),
+      note,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  try {
+    const signed = await getUploadSignedUrl(file);
+    await uploadFileToSignedUrl(signed.signedUrl, file);
+    return await request<GardenPhoto>(`/api/v1/gardens/${gardenId}/photos`, {
+      method: "POST",
+      body: JSON.stringify({
+        storagePath: signed.storagePath,
+        capturedAt: new Date().toISOString(),
+        note
+      })
+    });
+  } catch (error) {
+    if (isAuthRequiredError(error)) throw error;
+    console.warn("[Farmhani] Signed garden upload failed, trying backend upload:", error);
+    const form = new FormData();
+    form.append("gardenId", gardenId);
+    form.append("file", file);
+    form.append("capturedAt", new Date().toISOString());
+    if (note) form.append("note", note);
+    return request<GardenPhoto>("/api/v1/uploads/garden-photo", {
+      method: "POST",
+      body: form
+    });
+  }
+}
+
 export async function askPlantCare(
   question: string,
-  plantId: string,
+  plantId: string | undefined,
   options: {
+    gardenId?: string;
     careLogId?: string;
     photoId?: string;
     sessionId?: string;
@@ -676,6 +721,7 @@ export async function askPlantCare(
     method: "POST",
     body: JSON.stringify({
       plantId,
+      gardenId: options.gardenId,
       careLogId: options.careLogId,
       photoId: options.photoId,
       sessionId: options.sessionId,
@@ -689,8 +735,9 @@ export async function askPlantCare(
 
 export async function askPlantCareStream(
   question: string,
-  plantId: string,
+  plantId: string | undefined,
   options: {
+    gardenId?: string;
     careLogId?: string;
     photoId?: string;
     sessionId?: string;
@@ -715,6 +762,7 @@ export async function askPlantCareStream(
 
   const requestBody = JSON.stringify({
       plantId,
+      gardenId: options.gardenId,
       careLogId: options.careLogId,
       photoId: options.photoId,
       sessionId: options.sessionId,
@@ -897,9 +945,10 @@ export async function getFeedbackSummary(plantId?: string) {
   return request<SessionFeedbackStats[]>(`/api/v1/chat/feedback/summary${query ? `?${query}` : ""}`);
 }
 
-export async function listChatSessions(plantId?: string, responseMode?: ChatResponseMode) {
+export async function listChatSessions(plantId?: string, responseMode?: ChatResponseMode, gardenId?: string) {
   const params = new URLSearchParams();
   if (plantId) params.set("plantId", plantId);
+  if (gardenId) params.set("gardenId", gardenId);
   if (responseMode) params.set("responseMode", responseMode);
   const query = params.toString();
   return request<ChatSession[]>(`/api/v1/chat/sessions${query ? `?${query}` : ""}`);

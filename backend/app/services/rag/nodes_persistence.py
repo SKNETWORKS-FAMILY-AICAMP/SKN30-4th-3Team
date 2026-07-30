@@ -13,6 +13,9 @@ def persist_result(state: AgentState) -> Dict[str, Any]:
     db = state["db_client"]
     user_id = state["user_id"]
     plant_id = state["plant_id"]
+    garden_id = state.get("garden_id")
+    context_column = "garden_id" if garden_id else "plant_id"
+    context_id = garden_id or plant_id
     final = state["final_answer"]
     question = state["question"]
     response_mode = state.get("response_mode") or "expert"
@@ -34,7 +37,7 @@ def persist_result(state: AgentState) -> Dict[str, Any]:
                     db.table("chat_sessions")
                     .select("id,title")
                     .eq("user_id", user_id)
-                    .eq("plant_id", plant_id)
+                    .eq(context_column, context_id)
                     .eq("response_mode", response_mode)
                     .order("created_at", desc=True)
                     .limit(1)
@@ -46,7 +49,7 @@ def persist_result(state: AgentState) -> Dict[str, Any]:
                     db.table("chat_sessions")
                     .select("id,title")
                     .eq("user_id", user_id)
-                    .eq("plant_id", plant_id)
+                    .eq(context_column, context_id)
                     .like("title", f"{prefix}%")
                     .order("created_at", desc=True)
                     .limit(1)
@@ -70,6 +73,8 @@ def persist_result(state: AgentState) -> Dict[str, Any]:
                 "title": make_mode_session_title(state["plant_data"], question, response_mode),
                 "response_mode": response_mode
             }
+            if garden_id:
+                new_session["garden_id"] = garden_id
             try:
                 db.table("chat_sessions").insert(new_session).execute()
             except Exception:

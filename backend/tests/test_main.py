@@ -198,12 +198,18 @@ class MockSupabaseTable:
                         "created_at": "2026-06-01T12:00:00+00:00"
                     }
                 ]
+                eq_queries = [q for q in self.queries if q[0] == "eq"]
+                requested_garden_id = next((str(q[2]) for q in eq_queries if q[1] == "garden_id"), None)
+                if requested_garden_id:
+                    data[0]["plant_id"] = None
+                    data[0]["garden_id"] = requested_garden_id
             elif any(q[0] == "insert" for q in self.queries):
                 insert_val = next(q[1] for q in self.queries if q[0] == "insert")
                 data = [
                     {
                         "id": str(uuid.uuid4()),
-                        "plant_id": insert_val["plant_id"],
+                        "plant_id": insert_val.get("plant_id"),
+                        "garden_id": insert_val.get("garden_id"),
                         "storage_path": insert_val["storage_path"],
                         "note": insert_val.get("note"),
                         "captured_at": insert_val.get("captured_at"),
@@ -221,6 +227,10 @@ class MockSupabaseTable:
                     }
                 ]
                 eq_queries = [q for q in self.queries if q[0] == "eq"]
+                requested_garden_id = next((str(q[2]) for q in eq_queries if q[1] == "garden_id"), None)
+                if requested_garden_id:
+                    data[0]["plant_id"] = None
+                    data[0]["garden_id"] = requested_garden_id
                 requested_id = next((str(q[2]) for q in eq_queries if q[1] == "id"), None)
                 if requested_id and requested_id != data[0]["id"]:
                     data = []
@@ -420,13 +430,34 @@ def test_reject_blank_garden_name():
     assert response.status_code == 422
 
 
+def test_single_crop_garden_requires_representative_crop():
+    response = client.post("/api/v1/gardens", json={"name": "토마토 밭", "cultivationType": "single"})
+    assert response.status_code == 422
+
+
+def test_create_single_crop_garden():
+    response = client.post("/api/v1/gardens", json={
+        "name": "방울토마토 밭",
+        "cultivationType": "single",
+        "representativeCrop": "방울토마토",
+    })
+    assert response.status_code == 201
+    data = response.json()
+    assert data["cultivationType"] == "single"
+    assert data["representativeCrop"] == "방울토마토"
+
+
 def test_update_garden():
     garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
-    response = client.patch(f"/api/v1/gardens/{garden_id}", json={"name": "새 텃밭", "description": "허브 구획"})
+    image_url = "https://example.com/garden.jpg"
+    response = client.patch(f"/api/v1/gardens/{garden_id}", json={"name": "새 텃밭", "description": "허브 구획", "imageUrl": image_url, "cultivationType": "single", "representativeCrop": "바질"})
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "새 텃밭"
     assert data["description"] == "허브 구획"
+    assert data["imageUrl"] == image_url
+    assert data["cultivationType"] == "single"
+    assert data["representativeCrop"] == "바질"
 
 
 def test_delete_garden_unassigns_plants():
@@ -499,6 +530,56 @@ def test_consult_plant_care():
     assert "possibleCauses" in data
     assert "todayActions" in data
     assert "safetyNotice" in data
+
+
+def test_consult_garden_care():
+    payload = {
+        "gardenId": "a3b07384-d113-49c3-a558-1ec114a84d40",
+        "question": "텃밭 전체의 물주기와 햇빛 환경을 점검해 주세요."
+    }
+    response = client.post("/api/v1/chat/plant-care", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "summary" in data
+    assert "todayActions" in data
+    assert "citations" in data
+
+
+def test_create_garden_photo_metadata():
+    garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
+    response = client.post(
+        f"/api/v1/gardens/{garden_id}/photos",
+        json={
+            "storagePath": f"users/{TEST_USER_ID}/gardens/{garden_id}/overview.jpg",
+            "capturedAt": "2026-07-30T12:00:00Z",
+            "note": "텃밭 전체 사진",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["gardenId"] == garden_id
+    assert data["note"] == "텃밭 전체 사진"
+
+
+def test_consult_garden_care_with_photo():
+    response = client.post("/api/v1/chat/plant-care", json={
+        "gardenId": "a3b07384-d113-49c3-a558-1ec114a84d40",
+        "photoId": "e3b07384-d113-49c3-a558-1ec114a84d43",
+        "question": "이 텃밭 사진을 보고 전체 상태를 점검해 주세요.",
+    })
+    assert response.status_code == 200
+    assert "summary" in response.json()
+
+
+def test_consult_requires_exactly_one_target():
+    missing = client.post("/api/v1/chat/plant-care", json={"question": "상담해 주세요."})
+    duplicated = client.post("/api/v1/chat/plant-care", json={
+        "plantId": "d3b07384-d113-49c3-a558-1ec114a84d41",
+        "gardenId": "a3b07384-d113-49c3-a558-1ec114a84d40",
+        "question": "상담해 주세요."
+    })
+    assert missing.status_code == 422
+    assert duplicated.status_code == 422
 
 def test_create_signed_upload_url():
     payload = {
@@ -629,6 +710,16 @@ def test_list_chat_sessions_success():
     assert isinstance(data, list)
     assert len(data) == 1
     assert data[0]["id"] == "e3b07384-d113-49c3-a558-1ec114a84d44"
+
+
+def test_list_garden_chat_sessions_success():
+    garden_id = "a3b07384-d113-49c3-a558-1ec114a84d40"
+    response = client.get(f"/api/v1/chat/sessions?gardenId={garden_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["gardenId"] == garden_id
+    assert data[0]["plantId"] is None
 
 
 def test_delete_chat_session_success():

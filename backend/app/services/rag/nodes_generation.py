@@ -26,8 +26,9 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
     image_description = state.get("image_description") or "사진 분석 결과 없음"
     vision_error = state.get("vision_error")
     response_mode = state.get("response_mode") or "expert"
-    is_companion_mode = response_mode == "companion"
     plant = state.get("plant_data") or {}
+    is_garden = plant.get("context_type") == "garden"
+    is_companion_mode = response_mode == "companion" and not is_garden
     plant_label = plant.get("name") or plant.get("species") or "식물"
     chat_history = state.get("chat_history") or []
     history_text = "\n".join(
@@ -79,9 +80,10 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                     "citations": [],
                 }
             }
+        subject_label = f"{plant_label} 텃밭" if is_garden else plant_label
         return {
             "draft_answer": {
-                "summary": f"안녕하세요. {plant_label} 상담을 도와드릴게요. 물주기, 빛, 잎 상태, 흙 상태, 사진 진단 중 궁금한 내용을 편하게 적어주세요.",
+                "summary": f"안녕하세요. {subject_label} 상담을 도와드릴게요. 물주기, 빛, 잎 상태, 흙 상태 중 궁금한 내용을 편하게 적어주세요.",
                 "possibleCauses": ["아직 구체적인 증상이나 관리 질문이 입력되지 않았습니다."],
                 "todayActions": ["궁금한 점을 한 문장으로 적거나, 상태 사진을 첨부해 주세요."],
                 "observationChecklist": ["잎 색 변화", "흙 마름 정도", "최근 물 준 날짜", "빛을 받는 시간"],
@@ -129,6 +131,11 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                 "답변 모드는 '전문가와 상담하기'입니다. 차분하고 전문적인 상담 말투를 사용하세요. "
                 "summary는 한 문단의 자연스러운 상담 말투로 작성하고, todayActions는 사용자가 바로 따라 할 수 있는 구체적인 행동으로 작성하세요. "
             )
+            if is_garden:
+                mode_instruction += (
+                    "상담 대상은 단일 식물이 아니라 하나의 텃밭입니다. 텃밭의 위치, 일조, 토양, 구성 식물과 최근 관리 기록을 함께 비교하세요. "
+                    "구성 식물마다 관리 요구가 다르면 식물별로 구분하고, 텃밭 전체에 일괄 적용하면 위험한 조치는 권하지 마세요. "
+                )
 
             client = OpenAI(api_key=openai_key, timeout=18.0, max_retries=0)
             res = client.chat.completions.create(
@@ -139,7 +146,7 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                     {
                         "role": "system",
                         "content": (
-                            "당신은 식물 관리 상담을 돕는 AI입니다. 반드시 사용자의 식물 정보, 최근 관리 기록, 검색된 공식 문서만 근거로 답하세요. "
+                            "당신은 식물과 텃밭 관리 상담을 돕는 AI입니다. 반드시 사용자의 등록 정보, 최근 관리 기록, 검색된 공식 문서만 근거로 답하세요. "
                             "모든 답변은 JSON 객체만 출력합니다. "
                             "필드: evidenceNotes(string), summary(string), possibleCauses(string[]), todayActions(string[]), observationChecklist(string[]). "
                             "evidenceNotes 필드에는 사용자에게 보여줄 수 있는 짧은 근거 요약만 작성하세요. 내부 추론 과정이나 생각의 흐름은 출력하지 마세요. "

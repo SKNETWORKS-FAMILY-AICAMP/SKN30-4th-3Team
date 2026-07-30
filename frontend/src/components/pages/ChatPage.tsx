@@ -3,20 +3,25 @@ import {
   askPlantCareStream,
   deleteChatSession,
   getPlants,
+  listGardens,
   listChatMessages,
   listChatSessions,
   submitChatFeedback,
+  uploadGardenPhoto,
   uploadPlantPhoto
 } from "../../api";
 import dashboardPlantImage from "../../assets/dashboard-plant.webp";
+import consultationGardenIcon from "../../assets/consultation-garden.svg";
+import consultationPlantIcon from "../../assets/consultation-plant.svg";
 import { defaultPlantImages, type DesignPage } from "../../lib/constants";
-import { getSelectedPlantId, setSelectedPlantId } from "../../lib/storage";
+import { getSelectedGardenId, getSelectedPlantId, setSelectedGardenId, setSelectedPlantId } from "../../lib/storage";
 import type {
   ChatFeedbackRating,
   ChatMessage,
   ChatProgressEvent,
   ChatResponseMode,
   ChatSession,
+  Garden,
   PestDiagnosis,
   PesticideGuidance,
   Plant,
@@ -37,6 +42,12 @@ const quickQuestions = [
   "잎이 처진 원인을 확인하고 싶어요.",
   "최근 물주기 기록을 바탕으로 관찰할 점을 알려주세요.",
   "잎 색이 달라졌는데 어떤 정보를 더 확인해야 하나요?"
+] as const;
+
+const gardenQuickQuestions = [
+  "텃밭 식물들의 물주기와 햇빛 환경을 함께 점검해 주세요.",
+  "같은 텃밭 식물에 공통으로 잎 처짐이 보이면 무엇부터 확인해야 하나요?",
+  "현재 구성 식물별로 관리할 때 주의할 차이를 알려주세요."
 ] as const;
 
 const acceptedPhotoTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -111,7 +122,9 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const messagePhotoUrlsRef = useRef<string[]>([]);
   const [plants, setPlants] = useState<Plant[]>([]);
+  const [gardens, setGardens] = useState<Garden[]>([]);
   const [selectedPlantId, setSelectedPlant] = useState(getSelectedPlantId() || "");
+  const [selectedGardenId, setSelectedGarden] = useState(getSelectedGardenId() || "");
   const [question, setQuestion] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState("");
@@ -131,13 +144,30 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const [error, setError] = useState("");
   const [activeQuestionId, setActiveQuestionId] = useState<string>();
   const [revealingMessageId, setRevealingMessageId] = useState<string>();
+  const isGardenConsultation = Boolean(selectedGardenId);
+  const consultationTargetId = selectedGardenId || selectedPlantId;
 
   useEffect(() => {
     let active = true;
-    getPlants()
-      .then((rows) => {
+    Promise.all([getPlants(), listGardens().catch(() => [] as Garden[])])
+      .then(([rows, gardenRows]) => {
         if (!active) return;
         setPlants(rows);
+        setGardens(gardenRows);
+        const storedGardenId = getSelectedGardenId();
+        if (gardenRows.some((garden) => garden.id === storedGardenId)) {
+          setSelectedGarden(storedGardenId || "");
+          setSelectedPlant(rows.find((plant) => plant.gardenId === storedGardenId)?.id || rows[0]?.id || "");
+          setMode("expert");
+          return;
+        }
+        setSelectedGarden("");
+        if (rows.length === 0 && gardenRows[0]) {
+          setSelectedGarden(gardenRows[0].id);
+          setSelectedGardenId(gardenRows[0].id);
+          setMode("expert");
+          return;
+        }
         const storedPlantId = getSelectedPlantId();
         const initialPlantId = rows.some((plant) => plant.id === storedPlantId) ? storedPlantId || "" : rows[0]?.id || "";
         setSelectedPlant(initialPlantId);
@@ -157,7 +187,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   }, [onAuthError]);
 
   useEffect(() => {
-    if (!selectedPlantId) return;
+    if (!consultationTargetId) return;
     let active = true;
     setLoadingSessions(true);
     setLoadingConversation(true);
@@ -167,7 +197,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
     setStartingNewSession(true);
     setError("");
 
-    listChatSessions(selectedPlantId, mode)
+    listChatSessions(isGardenConsultation ? undefined : selectedPlantId, mode, selectedGardenId || undefined)
       .then(async (rows) => {
         if (!active) return;
         setSessions(rows);
@@ -193,7 +223,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
     return () => {
       active = false;
     };
-  }, [mode, onAuthError, selectedPlantId]);
+  }, [consultationTargetId, isGardenConsultation, mode, onAuthError, selectedGardenId, selectedPlantId]);
 
   useEffect(() => {
     if (!photo) {
@@ -232,6 +262,25 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
     };
   }, [revealingMessageId]);
 
+  function switchConsultationScope(scope: "plant" | "garden") {
+    if (submitting || loadingConversation || (scope === "garden") === isGardenConsultation) return;
+    if (scope === "plant") {
+      const nextPlantId = selectedPlantId || plants[0]?.id || "";
+      if (!nextPlantId) return;
+      setSelectedGarden("");
+      setSelectedPlant(nextPlantId);
+      setSelectedPlantId(nextPlantId);
+    } else {
+      const relatedGardenId = plants.find((plant) => plant.id === selectedPlantId)?.gardenId || "";
+      const nextGardenId = selectedGardenId || relatedGardenId || gardens[0]?.id || "";
+      if (!nextGardenId) return;
+      setSelectedGarden(nextGardenId);
+      setSelectedGardenId(nextGardenId);
+      setMode("expert");
+    }
+    startNewChat();
+  }
+
   async function openSession(nextSessionId: string) {
     if (nextSessionId === sessionId || loadingConversation) return;
     setError("");
@@ -265,7 +314,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
 
   async function refreshSessions(activeSessionId?: string) {
     try {
-      const rows = await listChatSessions(selectedPlantId, mode);
+      const rows = await listChatSessions(isGardenConsultation ? undefined : selectedPlantId, mode, selectedGardenId || undefined);
       setSessions(rows);
       if (activeSessionId) setSessionId(activeSessionId);
     } catch (caughtError) {
@@ -355,7 +404,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedQuestion = question.trim();
-    if (!trimmedQuestion || !selectedPlantId || submitting) return;
+    if (!trimmedQuestion || !consultationTargetId || submitting) return;
 
     const sentPhoto = photo;
     let sentPhotoUrl: string | undefined;
@@ -376,7 +425,9 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
     try {
       let photoId: string | undefined;
       if (sentPhoto) {
-        const uploadedPhoto = await uploadPlantPhoto(selectedPlantId, sentPhoto, trimmedQuestion);
+        const uploadedPhoto = isGardenConsultation && selectedGardenId
+          ? await uploadGardenPhoto(selectedGardenId, sentPhoto, trimmedQuestion)
+          : await uploadPlantPhoto(selectedPlantId, sentPhoto, trimmedQuestion);
         photoId = uploadedPhoto.id;
       }
 
@@ -387,8 +438,9 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
 
       const response = await askPlantCareStream(
         trimmedQuestion,
-        selectedPlantId,
+        isGardenConsultation ? undefined : selectedPlantId,
         {
+          gardenId: selectedGardenId || undefined,
           photoId,
           sessionId,
           newSession: startingNewSession || !sessionId,
@@ -419,7 +471,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (!question.trim() || !selectedPlantId || submitting) return;
+    if (!question.trim() || !consultationTargetId || submitting) return;
     event.currentTarget.form?.requestSubmit();
   }
 
@@ -435,11 +487,13 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   }
 
   if (loadingPlants) return <PageState kind="loading" title="AI 상담 화면을 준비하고 있어요" />;
-  if (plants.length === 0) {
+  if (!isGardenConsultation && plants.length === 0) {
     return <PageState kind="empty" title="먼저 식물을 등록해 주세요" description="AI 상담은 등록한 식물의 관리 이력과 함께 진행됩니다." actionLabel="식물 등록" onAction={() => onNavigate("add")} />;
   }
 
   const selectedPlant = plants.find((plant) => plant.id === selectedPlantId);
+  const selectedGarden = gardens.find((garden) => garden.id === selectedGardenId);
+  const gardenMembers = plants.filter((plant) => plant.gardenId === selectedGardenId);
   const selectedPlantImage = selectedPlant?.imageUrl && !defaultPlantImages.includes(selectedPlant.imageUrl)
     ? selectedPlant.imageUrl
     : dashboardPlantImage;
@@ -447,23 +501,40 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   return (
     <div className="chat-page">
       <aside className="chat-context" aria-labelledby="chat-context-title">
-        <span className="chat-context-kicker"><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>{mode === "expert" ? " PLANT CARE AI" : ` ${selectedPlant?.name || "내 식물"}와 대화`}</span>
-        <h1 id="chat-context-title">{mode === "expert" ? <>식물 고민,<br />함께 살펴봐요</> : <>{selectedPlant?.name || "내 식물"}의<br />이야기를 들어봐요</>}</h1>
-        <p>{mode === "expert" ? "사진과 관리 기록을 바탕으로 가능한 원인과 다음 관찰 항목을 안내해 드려요." : "등록된 기록을 바탕으로 내 식물이 말하듯 쉽고 다정하게 설명해 드려요."}</p>
+        <span className="chat-context-kicker"><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>{isGardenConsultation ? " GARDEN CARE AI" : mode === "expert" ? " PLANT CARE AI" : ` ${selectedPlant?.name || "내 식물"}와 대화`}</span>
+        <h1 id="chat-context-title">{isGardenConsultation ? <>텃밭 고민,<br />함께 살펴봐요</> : mode === "expert" ? <>식물 고민,<br />함께 살펴봐요</> : <>{selectedPlant?.name || "내 식물"}의<br />이야기를 들어봐요</>}</h1>
+        <p>{isGardenConsultation ? "텃밭 환경과 소속 식물의 관리 기록을 함께 비교해 관리 방향을 안내해 드려요." : mode === "expert" ? "사진과 관리 기록을 바탕으로 가능한 원인과 다음 관찰 항목을 안내해 드려요." : "등록된 기록을 바탕으로 내 식물이 말하듯 쉽고 다정하게 설명해 드려요."}</p>
 
-        {selectedPlant && <div className="selected-plant-card"><img src={selectedPlantImage} alt="" onError={(event) => { event.currentTarget.src = dashboardPlantImage; }} /><div><small>지금 상담할 식물</small><strong>{selectedPlant.name}</strong><span>{selectedPlant.species || "종류 미등록"}</span></div></div>}
+        <div className="consultation-scope-selector" role="group" aria-label="상담 대상 선택">
+          <button className={!isGardenConsultation ? "is-active" : ""} type="button" disabled={plants.length === 0 || submitting || loadingConversation} onClick={() => switchConsultationScope("plant")}>
+            <img className="consultation-scope-thumbnail" src={consultationPlantIcon} alt="" />단일 식물 상담
+          </button>
+          <button className={isGardenConsultation ? "is-active" : ""} type="button" disabled={gardens.length === 0 || submitting || loadingConversation} onClick={() => switchConsultationScope("garden")}>
+            <img className="consultation-scope-thumbnail" src={consultationGardenIcon} alt="" />텃밭 상담
+          </button>
+        </div>
+
+        {isGardenConsultation && selectedGarden ? (
+          <div className="selected-plant-card selected-garden-card"><img src={selectedGarden.imageUrl || consultationGardenIcon} alt="" onError={(event) => { event.currentTarget.src = consultationGardenIcon; }} /><div><small>지금 상담할 텃밭</small><strong>{selectedGarden.name}</strong><span>{selectedGarden.cultivationType === "single" ? selectedGarden.representativeCrop || "단일 작물" : `${selectedGarden.location || "위치 미등록"} · 식물 ${gardenMembers.length}개`}</span></div></div>
+        ) : selectedPlant && <div className="selected-plant-card"><img src={selectedPlantImage} alt="" onError={(event) => { event.currentTarget.src = dashboardPlantImage; }} /><div><small>지금 상담할 식물</small><strong>{selectedPlant.name}</strong><span>{selectedPlant.species || "종류 미등록"}</span></div></div>}
 
         <label className="field field-on-dark">
-          <span>점검할 식물</span>
-          <select onChange={(event) => { setSelectedPlant(event.target.value); setSelectedPlantId(event.target.value); }} value={selectedPlantId}>
-            {plants.map((plant) => <option key={plant.id} value={plant.id}>{plant.name} · {plant.species || "종류 미등록"}</option>)}
-          </select>
+          <span>{isGardenConsultation ? "상담할 텃밭" : "점검할 식물"}</span>
+          {isGardenConsultation ? (
+            <select onChange={(event) => { setSelectedGarden(event.target.value); setSelectedGardenId(event.target.value); setMode("expert"); }} value={selectedGardenId}>
+              {gardens.map((garden) => <option key={garden.id} value={garden.id}>{garden.name} · 식물 {plants.filter((plant) => plant.gardenId === garden.id).length}개</option>)}
+            </select>
+          ) : (
+            <select onChange={(event) => { setSelectedPlant(event.target.value); setSelectedPlantId(event.target.value); }} value={selectedPlantId}>
+              {plants.map((plant) => <option key={plant.id} value={plant.id}>{plant.name} · {plant.species || "종류 미등록"}</option>)}
+            </select>
+          )}
         </label>
 
-        <div className="mode-selector" role="group" aria-label="상담 모드">
+        {!isGardenConsultation && <div className="mode-selector" role="group" aria-label="상담 모드">
           <button className={mode === "expert" ? "is-active" : ""} type="button" onClick={() => setMode("expert")}><span className="material-symbols-outlined" aria-hidden="true">format_list_bulleted</span><span><strong>식물 관리 상담</strong><small>근거와 행동 중심</small></span></button>
           <button className={mode === "companion" ? "is-active" : ""} type="button" onClick={() => setMode("companion")}><span className="material-symbols-outlined" aria-hidden="true">chat_bubble</span><span><strong>내 식물과 대화하기</strong><small>식물이 말하듯 쉽게</small></span></button>
-        </div>
+        </div>}
 
         <section className="chat-session-panel" aria-labelledby="chat-session-title">
           <div className="chat-session-heading">
@@ -527,10 +598,10 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
         )}
         <header className="chat-heading">
           <div>
-            <span className="eyebrow">{startingNewSession ? "새 상담" : `${selectedPlant?.name || "선택한 식물"}와 상담 중`}</span>
-            <h2 id="conversation-title">{mode === "expert" ? "어떤 점이 궁금한가요?" : `${selectedPlant?.name || "내 식물"}에게 말을 걸어보세요`}</h2>
+            <span className="eyebrow">{startingNewSession ? "새 상담" : `${isGardenConsultation ? selectedGarden?.name || "선택한 텃밭" : selectedPlant?.name || "선택한 식물"} 상담 중`}</span>
+            <h2 id="conversation-title">{isGardenConsultation ? "텃밭에서 어떤 점이 궁금한가요?" : mode === "expert" ? "어떤 점이 궁금한가요?" : `${selectedPlant?.name || "내 식물"}에게 말을 걸어보세요`}</h2>
           </div>
-          <button className="button button-secondary button-small" type="button" onClick={() => onNavigate("detail")}><span className="material-symbols-outlined" aria-hidden="true">history</span>식물 기록</button>
+          <button className="button button-secondary button-small" type="button" onClick={() => onNavigate(isGardenConsultation ? "garden" : "detail")}><span className="material-symbols-outlined" aria-hidden="true">history</span>{isGardenConsultation ? "텃밭 정보" : "식물 기록"}</button>
         </header>
 
         {error && <div className="alert alert-error" role="alert">{error}</div>}
@@ -541,10 +612,10 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
           ) : conversation.length === 0 && (
             <div className="conversation-empty">
               <span className="conversation-empty-icon material-symbols-outlined" aria-hidden="true">temp_preferences_eco</span>
-              <h3>{mode === "expert" ? "관찰한 변화를 편하게 알려주세요" : `${selectedPlant?.name || "내 식물"}의 오늘을 들려주세요`}</h3>
-              <p>{mode === "expert" ? "변화가 시작된 시점과 위치, 최근 물주기와 빛 환경을 함께 알려주면 가능한 원인을 더 정확히 좁힐 수 있어요." : "오늘 보인 모습과 최근 달라진 점을 말해 주세요. 기록을 바탕으로 내 식물이 말하듯 설명해 드릴게요."}</p>
+              <h3>{isGardenConsultation ? "텃밭 전체의 변화를 알려주세요" : mode === "expert" ? "관찰한 변화를 편하게 알려주세요" : `${selectedPlant?.name || "내 식물"}의 오늘을 들려주세요`}</h3>
+              <p>{isGardenConsultation ? "여러 식물에 공통으로 나타난 변화, 물주기 방식, 햇빛과 통풍 상태를 알려주면 식물별 차이까지 함께 살펴볼게요." : mode === "expert" ? "변화가 시작된 시점과 위치, 최근 물주기와 빛 환경을 함께 알려주면 가능한 원인을 더 정확히 좁힐 수 있어요." : "오늘 보인 모습과 최근 달라진 점을 말해 주세요. 기록을 바탕으로 내 식물이 말하듯 설명해 드릴게요."}</p>
               <div className="quick-question-list">
-                {quickQuestions.map((item) => <button key={item} type="button" onClick={() => setQuestion(item)}><span className="material-symbols-outlined" aria-hidden="true">north_west</span>{item}</button>)}
+                {(isGardenConsultation ? gardenQuickQuestions : quickQuestions).map((item) => <button key={item} type="button" onClick={() => setQuestion(item)}><span className="material-symbols-outlined" aria-hidden="true">north_west</span>{item}</button>)}
               </div>
             </div>
           )}
@@ -608,8 +679,8 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
             />
           </label>
           <label className="sr-only" htmlFor="chat-question">식물 관찰 내용</label>
-          <textarea aria-keyshortcuts="Enter" id="chat-question" onChange={(event) => setQuestion(event.target.value)} onKeyDown={handleQuestionKeyDown} onPaste={handlePhotoPaste} placeholder="예: 3일 전부터 아래 잎이 노랗고, 일주일 전에 물을 줬어요." rows={1} title="Enter로 전송 · Shift+Enter로 줄바꿈 · 사진은 끌어다 놓거나 붙여넣기(Ctrl+V)" value={question} />
-          <button className="send-button" disabled={!question.trim() || !selectedPlantId || submitting || loadingConversation} type="submit" aria-label="질문 보내기"><span className="material-symbols-outlined" aria-hidden="true">arrow_upward</span></button>
+          <textarea aria-keyshortcuts="Enter" id="chat-question" onChange={(event) => setQuestion(event.target.value)} onKeyDown={handleQuestionKeyDown} onPaste={handlePhotoPaste} placeholder={isGardenConsultation ? "예: 같은 텃밭인데 토마토와 바질의 잎이 함께 처져 보여요." : "예: 3일 전부터 아래 잎이 노랗고, 일주일 전에 물을 줬어요."} rows={2} title="Enter로 전송 · Shift+Enter로 줄바꿈 · 사진은 끌어다 놓거나 붙여넣기(Ctrl+V)" value={question} />
+          <button className="send-button" disabled={!question.trim() || !consultationTargetId || submitting || loadingConversation} type="submit" aria-label="질문 보내기"><span className="material-symbols-outlined" aria-hidden="true">arrow_upward</span></button>
         </form>
       </section>
     </div>

@@ -13,6 +13,7 @@ import {
 
 export function setSelectedPlantId(plantId: string) {
   localStorage.setItem(SELECTED_PLANT_ID_KEY, plantId);
+  localStorage.removeItem(SELECTED_GARDEN_ID_KEY);
 }
 
 export function getSelectedPlantId() {
@@ -21,10 +22,15 @@ export function getSelectedPlantId() {
 
 export function setSelectedGardenId(gardenId: string) {
   localStorage.setItem(SELECTED_GARDEN_ID_KEY, gardenId);
+  localStorage.removeItem(SELECTED_PLANT_ID_KEY);
 }
 
 export function getSelectedGardenId() {
   return localStorage.getItem(SELECTED_GARDEN_ID_KEY);
+}
+
+export function clearSelectedGardenId() {
+  localStorage.removeItem(SELECTED_GARDEN_ID_KEY);
 }
 
 export function setLastSessionId(sessionId?: string) {

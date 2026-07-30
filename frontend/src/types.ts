@@ -26,6 +26,8 @@ export type Garden = {
   plantCount?: number; // 소속 작물 수
   createdAt: string;
   imageUrl?: string | null;
+  cultivationType: "single" | "mixed";
+  representativeCrop?: string | null;
 };
 
 export type CareLog = {
@@ -41,6 +43,15 @@ export type CareLog = {
 export type PlantPhoto = {
   id: string;
   plantId: string;
+  storagePath: string;
+  capturedAt?: string | null;
+  note?: string | null;
+  createdAt: string;
+};
+
+export type GardenPhoto = {
+  id: string;
+  gardenId: string;
   storagePath: string;
   capturedAt?: string | null;
   note?: string | null;
@@ -147,6 +158,7 @@ export type ChatSession = {
   id: string;
   userId: string;
   plantId?: string | null;
+  gardenId?: string | null;
   title?: string | null;
   createdAt: string;
 };

@@ -182,6 +182,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PlantPhoto"
+  /api/v1/gardens/{gardenId}/photos:
+    post:
+      summary: Register uploaded garden photo metadata
+      parameters:
+        - $ref: "#/components/parameters/GardenId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GardenPhotoCreate"
+      responses:
+        "201":
+          description: Registered garden photo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GardenPhoto"
   /api/v1/plants/{plantId}/care-logs/{logId}:
     put:
       summary: Update a care log entry
@@ -228,6 +246,12 @@ paths:
       summary: List current user's RAG chat sessions
       parameters:
         - name: plantId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: gardenId
           in: query
           required: false
           schema:
@@ -374,6 +398,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PlantPhoto"
+  /api/v1/uploads/garden-photo:
+    post:
+      summary: Upload garden photo through backend and register metadata
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [gardenId, file]
+              properties:
+                gardenId:
+                  type: string
+                  format: uuid
+                file:
+                  type: string
+                  format: binary
+                note:
+                  type: string
+                capturedAt:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Uploaded and registered garden photo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GardenPhoto"
 components:
   securitySchemes:
     bearerAuth:
@@ -448,6 +501,13 @@ components:
         soilType:
           type: string
           maxLength: 40
+        cultivationType:
+          type: string
+          enum: [single, mixed]
+          default: mixed
+        representativeCrop:
+          type: string
+          maxLength: 80
     GardenUpdate:
       type: object
       properties:
@@ -464,6 +524,15 @@ components:
           type: string
           nullable: true
         soilType:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        cultivationType:
+          type: string
+          enum: [single, mixed]
+        representativeCrop:
           type: string
           nullable: true
     Garden:
@@ -537,11 +606,41 @@ components:
             createdAt:
               type: string
               format: date-time
+    GardenPhotoCreate:
+      type: object
+      required: [storagePath]
+      properties:
+        storagePath:
+          type: string
+        capturedAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+    GardenPhoto:
+      allOf:
+        - $ref: "#/components/schemas/GardenPhotoCreate"
+        - type: object
+          required: [id, gardenId, createdAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            gardenId:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
     PlantCareChatRequest:
       type: object
-      required: [plantId]
+      required: [question]
+      description: plantId와 gardenId 중 하나만 전달합니다.
       properties:
         plantId:
+          type: string
+          format: uuid
+        gardenId:
           type: string
           format: uuid
         careLogId:
@@ -725,6 +824,11 @@ components:
         plantId:
           type: string
           format: uuid
+          nullable: true
+        gardenId:
+          type: string
+          format: uuid
+          nullable: true
         createdAt:
           type: string
           format: date-time

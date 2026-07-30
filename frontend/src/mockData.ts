@@ -129,7 +129,9 @@ export const mockGardens: Garden[] = [
     soilType: "상토 + 마사토",
     plantCount: 3,
     createdAt: "2026-06-05T09:00:00Z",
-    imageUrl: null
+    imageUrl: null,
+    cultivationType: "mixed",
+    representativeCrop: "방울토마토"
   },
   {
     id: "garden-rooftop",
@@ -140,6 +142,8 @@ export const mockGardens: Garden[] = [
     soilType: "밭흙",
     plantCount: 5,
     createdAt: "2026-06-20T08:00:00Z",
-    imageUrl: null
+    imageUrl: null,
+    cultivationType: "mixed",
+    representativeCrop: "고추"
   }
 ];

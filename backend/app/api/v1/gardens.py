@@ -8,7 +8,7 @@ from supabase import Client
 
 from app.auth.security import get_current_user
 from app.db.session import get_supabase_client
-from app.schemas.garden import Garden, GardenCreate, GardenUpdate
+from app.schemas.garden import Garden, GardenCreate, GardenPhoto, GardenPhotoCreate, GardenUpdate
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ def garden_response(item: dict, plant_count: int = 0) -> Garden:
         sunlight=item.get("sunlight"),
         soilType=item.get("soil_type"),
         imageUrl=item.get("image_url"),
+        cultivationType=item.get("cultivation_type") or "mixed",
+        representativeCrop=item.get("representative_crop"),
         plantCount=plant_count,
         createdAt=datetime.fromisoformat(item["created_at"]),
     )
@@ -86,6 +88,8 @@ def create_garden(
             "description": garden_in.description,
             "sunlight": garden_in.sunlight,
             "soil_type": garden_in.soilType,
+            "cultivation_type": garden_in.cultivationType,
+            "representative_crop": garden_in.representativeCrop,
         }
         response = db.table("gardens").insert(payload).execute()
         if not response.data:
@@ -113,6 +117,9 @@ def update_garden(
             "description": "description",
             "sunlight": "sunlight",
             "soilType": "soil_type",
+            "imageUrl": "image_url",
+            "cultivationType": "cultivation_type",
+            "representativeCrop": "representative_crop",
         }
         payload = {
             column: getattr(garden_in, field)
@@ -121,6 +128,12 @@ def update_garden(
         }
         if "name" in payload and payload["name"] is not None:
             payload["name"] = payload["name"].strip()
+        if "representative_crop" in payload and payload["representative_crop"] is not None:
+            payload["representative_crop"] = payload["representative_crop"].strip() or None
+        next_type = payload.get("cultivation_type", current.get("cultivation_type") or "mixed")
+        next_crop = payload.get("representative_crop", current.get("representative_crop"))
+        if next_type == "single" and not next_crop:
+            raise HTTPException(status_code=422, detail="단일 작물 텃밭은 대표 작물을 입력해야 합니다.")
         if payload:
             response = (
                 db.table("gardens")
@@ -145,6 +158,43 @@ def update_garden(
     except Exception:
         logger.exception("텃밭 수정 중 오류 발생")
         raise HTTPException(status_code=500, detail="텃밭 수정 중 오류가 발생했습니다.")
+
+
+@router.post("/{gardenId}/photos", response_model=GardenPhoto, status_code=status.HTTP_201_CREATED, summary="텃밭 사진 메타데이터 등록")
+def create_garden_photo(
+    photo_in: GardenPhotoCreate,
+    gardenId: uuid.UUID = Path(..., description="텃밭 UUID"),
+    current_user_id: uuid.UUID = Depends(get_current_user),
+    db: Client = Depends(get_supabase_client),
+):
+    try:
+        owned_garden(gardenId, current_user_id, db)
+        if not photo_in.storagePath.startswith(f"users/{current_user_id}/"):
+            raise HTTPException(status_code=400, detail="현재 사용자의 저장 경로만 등록할 수 있습니다.")
+        payload = {
+            "plant_id": None,
+            "garden_id": str(gardenId),
+            "storage_path": photo_in.storagePath,
+            "note": photo_in.note,
+            "captured_at": (photo_in.capturedAt or datetime.now().astimezone()).isoformat(),
+        }
+        response = db.table("plant_photos").insert(payload).execute()
+        if not response.data:
+            raise HTTPException(status_code=500, detail="텃밭 사진 등록에 실패했습니다.")
+        item = response.data[0]
+        return GardenPhoto(
+            id=uuid.UUID(item["id"]),
+            gardenId=uuid.UUID(item["garden_id"]),
+            storagePath=item["storage_path"],
+            capturedAt=datetime.fromisoformat(item["captured_at"]),
+            note=item.get("note"),
+            createdAt=datetime.fromisoformat(item["created_at"]),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("텃밭 사진 등록 중 오류 발생")
+        raise HTTPException(status_code=500, detail="텃밭 사진 등록 중 오류가 발생했습니다.")
 
 
 @router.delete("/{gardenId}", status_code=status.HTTP_204_NO_CONTENT, summary="텃밭 삭제")
