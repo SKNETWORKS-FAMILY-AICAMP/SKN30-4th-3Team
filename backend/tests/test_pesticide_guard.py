@@ -12,6 +12,7 @@ from app.services.rag.pesticide_guard import (
     is_pesticide_question,
     partition_pesticide_docs,
 )
+from app.services.rag.vectorstore import SearchResult
 
 
 def pesticide_doc(title="토마토 응애 등록 농약", key="safety_tags") -> dict:
@@ -136,6 +137,69 @@ def _disable_openai(monkeypatch):
     """환경변수와 settings 양쪽을 비워 grade_or_rerank의 키없음 경로를 태운다."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(nodes_retrieval.settings, "OPENAI_API_KEY", "", raising=False)
+    monkeypatch.setattr(nodes_retrieval.settings, "LLM_FALLBACK_ENABLED", False, raising=False)
+    monkeypatch.setattr(nodes_retrieval.settings, "LOCAL_LLM_AUXILIARY_ENABLED", False, raising=False)
+
+
+def test_retrieve_docs_refills_with_ordinary_official_docs(monkeypatch):
+    """농약 후보가 상위 8건을 차지해도 뒤의 일반 공식 문서를 잃지 않는다."""
+    captured = {}
+    pesticide_results = [
+        SearchResult(
+            f"농약 자료 {index}",
+            pesticide_doc(f"농약 문서 {index}")["metadata"],
+            1.0 - index * 0.01,
+        )
+        for index in range(8)
+    ]
+    ordinary_results = [
+        SearchResult(
+            "감자 생육 단계별 물관리 방법",
+            ordinary_doc("농사로 감자 물관리")["metadata"],
+            0.70,
+        ),
+        SearchResult(
+            "감자 잎 황화 시 토양 수분 점검 방법",
+            ordinary_doc("농사로 감자 생육장해")["metadata"],
+            0.69,
+        ),
+    ]
+
+    def fake_search(query, top_k=8, target_crop_terms=None):
+        captured["top_k"] = top_k
+        return pesticide_results + ordinary_results
+
+    monkeypatch.setattr(nodes_retrieval, "search_documents", fake_search)
+
+    result = nodes_retrieval.retrieve_docs({
+        "question": "감자 잎이 노랗게 변했어요",
+        "plant_data": {"name": "감자", "species": "Solanum tuberosum"},
+        "image_signals": ["잎 황화"],
+        "image_description": "",
+        "search_query": "감자 잎 황화 원인",
+    })
+
+    assert captured["top_k"] == nodes_retrieval.CANDIDATE_POOL_SIZE
+    assert [doc["metadata"]["title"] for doc in result["retrieved_docs"]] == [
+        "농사로 감자 물관리",
+        "농사로 감자 생육장해",
+    ]
+    assert result["pesticide_docs_filtered"] == 8
+
+
+def test_grade_or_rerank_preserves_pre_rerank_filtered_count(monkeypatch):
+    _disable_openai(monkeypatch)
+    result = nodes_retrieval.grade_or_rerank({
+        "retrieved_docs": [ordinary_doc("농사로 감자 생육장해")],
+        "pesticide_docs_filtered": 8,
+        "question": "감자 잎이 노랗게 변했어요",
+        "plant_data": {"name": "감자", "species": "Solanum tuberosum"},
+    })
+
+    assert [doc["metadata"]["title"] for doc in result["retrieved_docs"]] == [
+        "농사로 감자 생육장해"
+    ]
+    assert result["pesticide_docs_filtered"] == 8
 
 
 def test_grade_or_rerank_applies_guard_on_no_key_path(monkeypatch):

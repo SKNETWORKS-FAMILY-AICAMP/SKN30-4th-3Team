@@ -9,9 +9,11 @@ from app.services.llm.schemas import QueryExpansion, RerankDecision, parse_json_
 from app.services.rag.common import AgentState, is_smalltalk_question
 from app.services.rag.pesticide_guard import apply_pesticide_guard
 from app.services.rag.plant_terms import resolve_target_crop_terms
-from app.services.rag.vectorstore import search_documents
+from app.services.rag.vectorstore import CANDIDATE_POOL_SIZE, search_documents
 
 logger = logging.getLogger(__name__)
+
+RERANK_INPUT_COUNT = 8
 
 
 # 4. build_retrieval_query 노드
@@ -66,7 +68,7 @@ def build_retrieval_query(state: AgentState) -> Dict[str, Any]:
 # 5. retrieve_docs 노드
 def retrieve_docs(state: AgentState) -> Dict[str, Any]:
     if is_smalltalk_question(state.get("question") or ""):
-        return {"retrieved_docs": []}
+        return {"retrieved_docs": [], "pesticide_docs_filtered": 0}
     plant = state.get("plant_data") or {}
     question = state.get("question") or ""
     compact_query = " ".join(
@@ -90,7 +92,14 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
     # crop_or_plant 구조화 태그와 직접 비교할 작물명 후보를 만든다. 자유 텍스트 쿼리
     # 파싱보다 신뢰도가 높아 근연종(가지과 등) 오매칭을 결정적으로 차단할 수 있다.
     target_crop_terms = resolve_target_crop_terms(plant.get("name"), plant.get("species"))
-    search_results = search_documents(query, top_k=8, target_crop_terms=target_crop_terms)
+    # DB 검색은 이미 최대 CANDIDATE_POOL_SIZE개의 후보를 수집한다. 농약 문서가
+    # 상위 결과를 차지하더라도 일반 공식 문서가 재정렬 입력에서 밀려나지 않도록,
+    # 후보 전체에서 무관한 농약 문서를 먼저 제외한 뒤 상위 8개를 선택한다.
+    search_results = search_documents(
+        query,
+        top_k=CANDIDATE_POOL_SIZE,
+        target_crop_terms=target_crop_terms,
+    )
 
     docs = []
     for res in search_results:
@@ -99,21 +108,35 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
             "metadata": res.metadata,
             "score": res.score
         })
-    return {"retrieved_docs": docs}
+    docs, excluded = apply_pesticide_guard(question, docs)
+    if excluded:
+        logger.info(
+            "Pesticide guard: removed %d off-topic pesticide candidate(s) before reranking",
+            excluded,
+        )
+    return {
+        "retrieved_docs": docs[:RERANK_INPUT_COUNT],
+        "pesticide_docs_filtered": excluded,
+    }
 
-def _finalize_docs(question: str, docs: list) -> Dict[str, Any]:
+def _finalize_docs(state: AgentState, docs: list) -> Dict[str, Any]:
     """grade_or_rerank의 단일 출구.
 
     LLM 리랭커가 예외/키없음으로 fail-open 하는 경로에서도 농약 가드는 반드시
     지나가야 하므로, 모든 반환을 이 함수로 모은다.
     """
+    question = state["question"]
     kept, excluded = apply_pesticide_guard(question, docs)
+    previously_excluded = int(state.get("pesticide_docs_filtered") or 0)
     if excluded:
         logger.info(
             "Pesticide guard: dropped %d off-topic pesticide doc(s) for a non-pesticide question",
             excluded,
         )
-    return {"retrieved_docs": kept, "pesticide_docs_filtered": excluded}
+    return {
+        "retrieved_docs": kept,
+        "pesticide_docs_filtered": previously_excluded + excluded,
+    }
 
 
 # 6. grade_or_rerank 노드
@@ -132,7 +155,7 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
         not openai_key
         and not (settings.LLM_FALLBACK_ENABLED and settings.LOCAL_LLM_AUXILIARY_ENABLED)
     ):
-        return _finalize_docs(question, docs[:4])
+        return _finalize_docs(state, docs[:4])
         
     try:
         # 후보 문서 전체를 한 프롬프트에 담아 1회 호출로 배치 채점한다.
@@ -180,7 +203,7 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
                     break
 
         # 모두 무관 판정이면 빈 리스트 유지 — 무관 문서를 억지로 주입하지 않는다 (환각 방지)
-        return _finalize_docs(question, filtered_docs)
+        return _finalize_docs(state, filtered_docs)
     except Exception as e:
         logger.warning("Reranking failed: %s", e)
-        return _finalize_docs(question, docs[:4])
+        return _finalize_docs(state, docs[:4])
