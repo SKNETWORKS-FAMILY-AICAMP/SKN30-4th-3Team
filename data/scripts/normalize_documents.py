@@ -70,7 +70,7 @@ def normalize_doc(row: dict[str, Any], registry: dict[str, dict[str, Any]]) -> d
         source_title = source.get("title", "")
         crop_or_plant = [name for name in crop_or_plant if source_title and not str(name).startswith(source_title)]
     is_index_doc = source_key and title == source.get("title") and source_key.startswith("nongsaro")
-    if not is_index_doc:
+    if not is_index_doc and source_key != "plantsolve_care":
         inference_text = title if source_key.startswith("nongsaro") else f"{title} {text}"
         for name in infer_crop_or_plant(inference_text):
             if name not in crop_or_plant:

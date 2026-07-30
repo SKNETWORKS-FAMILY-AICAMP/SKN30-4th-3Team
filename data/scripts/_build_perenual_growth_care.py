@@ -7,6 +7,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
+from common import load_env
+
 RAW_DIR = Path("data/raw")
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -57,7 +59,9 @@ if COVERAGE_MD_PATH.exists():
 print(f"조사 대상 전체 식물 목록: {len(target_plants)}종")
 
 # 2. Perenual Care Guide API Paging Fetch
-PERENUAL_KEY = "sk-Bfsd6a66d1ca011e819013"
+PERENUAL_KEY = load_env().get("PERENUAL_API_KEY", "").strip()
+if not PERENUAL_KEY:
+    raise RuntimeError("PERENUAL_API_KEY must be set in .env or the process environment.")
 
 def http_get_json(url: str, retries: int = 3) -> dict | None:
     for attempt in range(retries):
