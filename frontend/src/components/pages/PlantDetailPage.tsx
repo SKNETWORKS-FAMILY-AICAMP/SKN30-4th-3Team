@@ -129,7 +129,12 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
     setUploadingPhoto(true);
     setError("");
     try {
-      await uploadPlantPhoto(plantId, file, "상세 화면에서 추가한 관찰 사진");
+      const uploadedPhoto = await uploadPlantPhoto(plantId, file, "상세 화면에서 추가한 관찰 사진");
+      const imageUrl = storagePathToPublicUrl(uploadedPhoto.storagePath);
+      if (!imageUrl) {
+        throw new Error("업로드한 사진의 대표 이미지 URL을 생성하지 못했습니다.");
+      }
+      await updatePlant(plantId, { imageUrl });
       setReloadKey((value) => value + 1);
     } catch (caughtError) {
       if (onAuthError(caughtError)) return;
