@@ -62,7 +62,9 @@ DEFAULT_DATASET = "eval_dataset_v2.json"
 from openai import OpenAI
 
 from app.core.config import settings
+from app.services.rag import nodes_generation
 from app.services.rag import pipeline
+from app.services.rag import plant_terms
 from app.services.rag import vision
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
@@ -259,21 +261,90 @@ def _doc_crop_tags(doc) -> list:
     return [str(tag).strip() for tag in raw if str(tag).strip()]
 
 
+def effective_expected_crops(item) -> set:
+    """케이스의 기대 작물을 결정한다.
+
+    데이터셋에 expected_crops가 없으면 plant_name이 작물 용어 사전에 있을 때
+    그 이름을 기대 작물로 삼는다. 30개 케이스 중 14개만 손으로 작성되어 있어,
+    나머지가 검사에서 통째로 빠지는 것을 막는다.
+    """
+    explicit = {c.strip() for c in (item.get("expected_crops") or []) if c.strip()}
+    if explicit:
+        return explicit
+    plant_name = str(item.get("plant_name") or "").strip()
+    if plant_name and plant_name in plant_terms.get_plant_terms():
+        return {plant_name}
+    return set()
+
+
+def check_crop_gate(item) -> dict | None:
+    """작물 게이트 입력(resolve_target_crop_terms 출력)을 직접 검사한다.
+
+    검색 결과만 보는 지표는 게이트 자체의 결함을 놓친다. 게이트에 감자가
+    들어 있어도 감자 문서가 우연히 상위에 없으면 통과로 집계되기 때문이다.
+    실제로 resolve_target_crop_terms("토마토", "Solanum lycopersicum")이
+    ['토마토','감자']를 반환하던 결함이 이 방식으로만 드러난다.
+
+    기대 작물의 표기 변형(예: '체리' ↔ '양앵두(체리)')은 위반이 아니다.
+    """
+    expected = effective_expected_crops(item)
+    if not expected:
+        return None
+
+    resolved = plant_terms.resolve_target_crop_terms(
+        item.get("plant_name"), item.get("plant_species")
+    )
+
+    allowed = set()
+    for crop in expected:
+        allowed.update(plant_terms.get_tag_variants(crop) or [crop])
+        allowed.add(crop)
+    allowed_lower = {a.lower() for a in allowed}
+
+    leaked = [term for term in resolved if term.lower() not in allowed_lower]
+    forbidden = {c.strip() for c in (item.get("forbidden_crops") or []) if c.strip()}
+    leaked_forbidden = [t for t in leaked if t in forbidden]
+
+    if not resolved:
+        status = "EMPTY"  # 게이트가 비면 작물 제약이 걸리지 않는다
+    elif leaked:
+        status = "FAIL"
+    else:
+        status = "PASS"
+
+    return {
+        "status": status,
+        "resolved": resolved,
+        "leaked": leaked,
+        "leaked_forbidden": leaked_forbidden,
+        "expected_crops": sorted(expected),
+    }
+
+
 def check_crop_consistency(item, retrieved_docs) -> dict | None:
     """근거 문서의 crop_or_plant 태그로 작물 오매칭 여부를 판정한다.
 
-    금지 작물 태그를 가졌더라도 기대 작물 태그를 함께 가진 문서(예: ["토마토","감자"])는
-    현재 작물을 실제로 다루므로 위반이 아니다.
+    두 가지 기준을 함께 계산한다.
+      - 금지목록 기준: 데이터셋 forbidden_crops에 명시된 작물만 위반으로 본다.
+        기존 지표와의 비교를 위해 유지한다.
+      - 엄격 기준: 기대 작물 태그와 교집합이 없는 태그 문서는 모두 오매칭으로 본다.
+        forbidden_crops에 적어두지 않은 작물(감자를 빠뜨린 케이스 등)도 잡힌다.
+
+    기대 작물과 금지 작물을 함께 가진 문서(예: ["토마토","감자"], 실데이터의
+    ["몬스테라","무"] 같은 오염 태그)는 mixed로 따로 기록한다 — 통과 처리하되
+    태그 오염을 눈에 보이게 남긴다.
 
     반환: None(검사 대상 아님) 또는
-          {"status": "PASS"|"FAIL"|"N/A", "violations": [...], ...}
+          {"status": "PASS"|"FAIL"|"EMPTY"|"N/A", ...}
     """
-    expected = {c.strip() for c in (item.get("expected_crops") or []) if c.strip()}
+    expected = effective_expected_crops(item)
     forbidden = {c.strip() for c in (item.get("forbidden_crops") or []) if c.strip()}
     if not expected and not forbidden:
         return None
 
-    violations = []
+    violations = []        # 금지목록 기준
+    strict_violations = []  # 엄격 기준
+    mixed = []
     tagged_docs = 0
     expected_hits = 0
 
@@ -283,21 +354,30 @@ def check_crop_consistency(item, retrieved_docs) -> dict | None:
             continue  # 태그 없는 문서(일반 원칙 문서 등)는 기계 판정 대상 아님
         tagged_docs += 1
         tag_set = set(tags)
+        entry = {
+            "index": index,
+            "title": (doc.get("metadata") or {}).get("title") or "출처 미상",
+            "tags": tags,
+        }
         if tag_set & expected:
             expected_hits += 1
+            offending_mixed = sorted(tag_set & forbidden)
+            if offending_mixed:
+                mixed.append({**entry, "offending": offending_mixed})
             continue
         offending = sorted(tag_set & forbidden)
         if offending:
-            violations.append({
-                "index": index,
-                "title": (doc.get("metadata") or {}).get("title") or "출처 미상",
-                "tags": tags,
-                "offending": offending,
-            })
+            violations.append({**entry, "offending": offending})
+        if expected:
+            # 기대 작물과 교집합이 없으면 금지목록 등재 여부와 무관하게 오매칭이다
+            strict_violations.append({**entry, "offending": sorted(tag_set)})
 
-    if tagged_docs == 0:
+    if not retrieved_docs:
+        # 검색 0건은 그 자체로 실패다. N/A로 묶어 분모에서 빼면 결함이 지표에서 사라진다.
+        status = "EMPTY"
+    elif tagged_docs == 0:
         status = "N/A"
-    elif violations:
+    elif violations or strict_violations:
         status = "FAIL"
     else:
         status = "PASS"
@@ -305,12 +385,28 @@ def check_crop_consistency(item, retrieved_docs) -> dict | None:
     return {
         "status": status,
         "violations": violations,
+        "strict_violations": strict_violations,
+        "mixed": mixed,
         "tagged_docs": tagged_docs,
         "total_docs": len(retrieved_docs),
         "expected_hits": expected_hits,
         "expected_crops": sorted(expected),
         "forbidden_crops": sorted(forbidden),
+        "expected_crops_inferred": not (item.get("expected_crops") or []),
     }
+
+
+def check_safety_notice(retrieved_docs, safety_notice) -> dict | None:
+    """농약 근거를 쓴 답변에 안전 고지가 포함됐는지 검사한다 (계획보고서 AC-2).
+
+    근거 문서의 safety_tags를 기준으로 판정하므로, 답변 문장에 "농약" 같은
+    단어가 없어도 누락을 잡아낸다.
+    """
+    tags = nodes_generation.collect_document_safety_tags(retrieved_docs)
+    if "pesticide_caution" not in tags:
+        return None
+    present = nodes_generation.PESTICIDE_CAUTION_NOTICE in (safety_notice or "")
+    return {"status": "PASS" if present else "FAIL", "safety_tags": tags}
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +599,8 @@ def run_single_case(client: OpenAI, item) -> dict:
         context_text = "검색된 문서 없음"
 
     crop_check = check_crop_consistency(item, retrieved_docs)
+    gate_check = check_crop_gate(item)
+    safety_check = check_safety_notice(retrieved_docs, safety_notice)
 
     eval_data = judge_answer(
         client, item, answer_text, context_text,
@@ -516,6 +614,7 @@ def run_single_case(client: OpenAI, item) -> dict:
         "type": item["type"],
         "question": item["question"],
         "plant_label": plant_label_of(item),
+        "plant_species": item.get("plant_species"),
         "mismatch_note": item.get("mismatch_note"),
         "is_image_case": is_image_case,
         "image_file": item.get("image_file"),
@@ -529,6 +628,8 @@ def run_single_case(client: OpenAI, item) -> dict:
         "image_signals": image_signals,
         "vision_error": vision_error,
         "crop_check": crop_check,
+        "gate_check": gate_check,
+        "safety_check": safety_check,
         "eval_data": eval_data,
     }
 
@@ -558,7 +659,21 @@ def write_report(results, report_path: Path, dataset_name: str):
     crop_pass = [r for r in checked if r["crop_check"]["status"] == "PASS"]
     crop_fail = [r for r in checked if r["crop_check"]["status"] == "FAIL"]
     crop_na = [r for r in checked if r["crop_check"]["status"] == "N/A"]
+    crop_empty = [r for r in checked if r["crop_check"]["status"] == "EMPTY"]
     violation_count = sum(len(r["crop_check"]["violations"]) for r in checked)
+    strict_violation_count = sum(len(r["crop_check"]["strict_violations"]) for r in checked)
+    strict_fail = [r for r in checked if r["crop_check"]["strict_violations"]]
+    mixed_tag_docs = [
+        (r, m) for r in checked for m in r["crop_check"]["mixed"]
+    ]
+
+    gated = [r for r in results if r.get("gate_check")]
+    gate_fail = [r for r in gated if r["gate_check"]["status"] == "FAIL"]
+    gate_empty = [r for r in gated if r["gate_check"]["status"] == "EMPTY"]
+    gate_pass = [r for r in gated if r["gate_check"]["status"] == "PASS"]
+
+    safety_checked = [r for r in results if r.get("safety_check")]
+    safety_fail = [r for r in safety_checked if r["safety_check"]["status"] == "FAIL"]
 
     lines = []
     lines.append("# RAG 자동 평가 v2 리포트 (LLM-as-a-Judge + 작물 오매칭 기계 검사)\n")
@@ -589,22 +704,115 @@ def write_report(results, report_path: Path, dataset_name: str):
         )
         denom = len(crop_pass) + len(crop_fail)
         rate = (len(crop_pass) / denom * 100) if denom else 0.0
+        # 검색 0건(EMPTY)을 포함한 분모. N/A만 제외한다 — 검색 실패를 지표에서
+        # 빼면 "문서를 못 찾아서 오매칭도 없는" 상태가 100%로 집계된다.
+        strict_denom = len(crop_pass) + len(crop_fail) + len(crop_empty)
+        strict_rate = (len(crop_pass) / strict_denom * 100) if strict_denom else 0.0
         lines.append(f"- 검사 대상: **{len(checked)}개** 케이스")
-        lines.append(f"- ✅ 통과(PASS): **{len(crop_pass)}개** / ❌ 위반(FAIL): **{len(crop_fail)}개** / ⚪ 판정 불가(N/A, 태그 있는 문서 없음): {len(crop_na)}개")
-        lines.append(f"- **오매칭 차단율: {rate:.1f}%** (판정 가능 {denom}건 기준)")
-        lines.append(f"- 총 위반 문서: **{violation_count}건**")
-        if crop_fail:
+        lines.append(
+            f"- ✅ 통과(PASS): **{len(crop_pass)}개** / ❌ 위반(FAIL): **{len(crop_fail)}개** / "
+            f"🚫 검색 0건(EMPTY): **{len(crop_empty)}개** / ⚪ 판정 불가(N/A, 태그 있는 문서 없음): {len(crop_na)}개"
+        )
+        lines.append(f"- **오매칭 차단율(금지목록 기준): {rate:.1f}%** (판정 가능 {denom}건 기준)")
+        lines.append(
+            f"- **검색 성공 포함 차단율: {strict_rate:.1f}%** "
+            f"(EMPTY {len(crop_empty)}건을 분모에 포함한 {strict_denom}건 기준)"
+        )
+        lines.append(f"- 총 위반 문서: 금지목록 기준 **{violation_count}건** / "
+                     f"엄격 기준(기대 작물 외 전부) **{strict_violation_count}건**")
+        if crop_empty:
+            lines.append(
+                f"- 🚫 검색 0건 케이스: {', '.join(r['id'] for r in crop_empty)} "
+                "— 근거 문서를 전혀 찾지 못했습니다. 오매칭 이전에 검색 자체를 확인해야 합니다."
+            )
+        if crop_fail or strict_fail:
             lines.append("\n**❌ 위반 케이스:**\n")
-            lines.append("| 케이스 | 등록 작물 | 위반 문서 | 섞여 들어온 작물 태그 |")
-            lines.append("|---|---|---|---|")
+            lines.append("| 케이스 | 등록 작물 | 위반 문서 | 섞여 들어온 작물 태그 | 기준 |")
+            lines.append("|---|---|---|---|---|")
+            listed = set()
             for r in crop_fail:
                 for v in r["crop_check"]["violations"]:
+                    listed.add((r["id"], v["title"]))
                     lines.append(
                         f"| {r['id']} | {r['plant_label'] or '-'} | "
-                        f"{_excerpt(v['title'], 40)} | {', '.join(v['offending'])} |"
+                        f"{_excerpt(v['title'], 40)} | {', '.join(v['offending'])} | 금지목록 |"
+                    )
+            for r in strict_fail:
+                for v in r["crop_check"]["strict_violations"]:
+                    if (r["id"], v["title"]) in listed:
+                        continue
+                    lines.append(
+                        f"| {r['id']} | {r['plant_label'] or '-'} | "
+                        f"{_excerpt(v['title'], 40)} | {', '.join(v['offending'])} | 엄격 |"
                     )
         else:
-            lines.append("\n> 위반 없음 — 근거 문서에 금지 작물 태그가 섞이지 않았습니다.")
+            lines.append("\n> 위반 없음 — 근거 문서에 기대 작물 외 태그가 섞이지 않았습니다.")
+        if mixed_tag_docs:
+            lines.append("\n**⚠️ 태그 오염 의심 (기대 작물과 금지 작물을 함께 가진 문서):**\n")
+            lines.append("| 케이스 | 문서 | 태그 | 금지 작물과 겹침 |")
+            lines.append("|---|---|---|---|")
+            for r, m in mixed_tag_docs:
+                lines.append(
+                    f"| {r['id']} | {_excerpt(m['title'], 40)} | {', '.join(m['tags'])} | "
+                    f"{', '.join(m['offending'])} |"
+                )
+            lines.append(
+                "\n> 통과 처리되었으나 태그가 오염된 문서일 수 있습니다 "
+                "(실데이터 예: 몬스테라 문서에 '무' 태그). 적재 스크립트 확인이 필요합니다."
+            )
+        lines.append("")
+
+    # --- 작물 게이트 입력 검사 (검색 결과와 독립) ---
+    if gated:
+        lines.append("## 🚪 작물 게이트 입력 검사 (resolve_target_crop_terms)\n")
+        lines.append(
+            "검색 결과가 아니라 **게이트에 들어가는 작물 후보 자체**를 검사합니다. "
+            "게이트에 타 작물이 섞여 있어도 그 작물 문서가 우연히 상위에 없으면 "
+            "결과 기반 지표는 통과로 집계되므로, 결함을 직접 보려면 이 지표가 필요합니다.\n"
+        )
+        gate_denom = len(gate_pass) + len(gate_fail) + len(gate_empty)
+        gate_rate = (len(gate_pass) / gate_denom * 100) if gate_denom else 0.0
+        lines.append(f"- 검사 대상: **{len(gated)}개** 케이스")
+        lines.append(
+            f"- ✅ 정확(PASS): **{len(gate_pass)}개** / ❌ 타 작물 유입(FAIL): **{len(gate_fail)}개** / "
+            f"🚫 게이트 비었음(EMPTY): **{len(gate_empty)}개**"
+        )
+        lines.append(f"- **게이트 정확률: {gate_rate:.1f}%**")
+        if gate_fail:
+            lines.append("\n**❌ 게이트에 타 작물이 섞인 케이스:**\n")
+            lines.append("| 케이스 | 등록 작물 | 품종(학명) | 게이트 결과 | 유입된 작물 |")
+            lines.append("|---|---|---|---|---|")
+            for r in gate_fail:
+                g = r["gate_check"]
+                lines.append(
+                    f"| {r['id']} | {r['plant_label'] or '-'} | "
+                    f"{_excerpt(str(r.get('plant_species') or '-'), 30)} | "
+                    f"{', '.join(g['resolved'])} | **{', '.join(g['leaked'])}** |"
+                )
+            lines.append(
+                "\n> 학명의 속명이 근연종에 공유되어 발생하는 유형입니다 "
+                "(예: Solanum → 감자·토마토·가지). 이 상태에서는 해당 작물 문서가 "
+                "검색 상위에 오를 때 오매칭이 실제로 발생합니다."
+            )
+        if gate_empty:
+            lines.append(
+                f"\n> 게이트가 빈 케이스: {', '.join(r['id'] for r in gate_empty)} "
+                "— 작물 제약이 걸리지 않아 타 작물 문서가 통과할 수 있습니다."
+            )
+        lines.append("")
+
+    # --- 농약 안전 고지 검사 ---
+    if safety_checked:
+        lines.append("## ⚠️ 농약 안전 고지 검사\n")
+        lines.append(
+            "근거 문서에 `pesticide_caution` 태그가 있으면 답변 문구와 무관하게 "
+            "안전 고지가 포함되어야 합니다.\n"
+        )
+        rate_safety = ((len(safety_checked) - len(safety_fail)) / len(safety_checked) * 100)
+        lines.append(f"- 농약 근거를 사용한 케이스: **{len(safety_checked)}개**")
+        lines.append(f"- **안전 고지 포함률: {rate_safety:.1f}%** (누락 {len(safety_fail)}건)")
+        if safety_fail:
+            lines.append(f"- ❌ 누락 케이스: {', '.join(r['id'] for r in safety_fail)}")
         lines.append("")
 
     # --- 유형별 요약 ---
@@ -687,20 +895,54 @@ def write_report(results, report_path: Path, dataset_name: str):
 
         check = r["crop_check"]
         if check:
-            icon = {"PASS": "✅", "FAIL": "❌", "N/A": "⚪"}[check["status"]]
+            icon = {"PASS": "✅", "FAIL": "❌", "EMPTY": "🚫", "N/A": "⚪"}.get(check["status"], "?")
+            inferred = " *(기대 작물은 등록 이름에서 추론)*" if check.get("expected_crops_inferred") else ""
             lines.append(
-                f"**🌱 작물 태그 검사: {icon} {check['status']}** "
+                f"**🌱 작물 태그 검사: {icon} {check['status']}**{inferred} "
                 f"(기대 {', '.join(check['expected_crops']) or '-'} / "
                 f"금지 {', '.join(check['forbidden_crops']) or '-'} | "
                 f"태그 보유 문서 {check['tagged_docs']}/{check['total_docs']}건, "
                 f"기대 작물 일치 {check['expected_hits']}건)"
             )
+            if check["status"] == "EMPTY":
+                lines.append("  - 🚫 근거 문서를 전혀 찾지 못했습니다 (오매칭 판정 이전 단계 실패).")
             for v in check["violations"]:
                 lines.append(
                     f"  - ❌ 문서 {v['index']} `{_excerpt(v['title'], 40)}` "
                     f"태그={v['tags']} → 금지 작물 {', '.join(v['offending'])} 포함"
                 )
+            listed_strict = {v["index"] for v in check["violations"]}
+            for v in check["strict_violations"]:
+                if v["index"] in listed_strict:
+                    continue
+                lines.append(
+                    f"  - ❌ 문서 {v['index']} `{_excerpt(v['title'], 40)}` "
+                    f"태그={v['tags']} → 기대 작물과 무관 (엄격 기준)"
+                )
+            for m in check["mixed"]:
+                lines.append(
+                    f"  - ⚠️ 문서 {m['index']} `{_excerpt(m['title'], 40)}` "
+                    f"태그={m['tags']} → 기대 작물과 금지 작물이 함께 있음 (태그 오염 의심)"
+                )
             lines.append("")
+
+        gate = r.get("gate_check")
+        if gate and gate["status"] != "PASS":
+            lines.append(
+                f"**🚪 작물 게이트: {'❌ FAIL' if gate['status'] == 'FAIL' else '🚫 EMPTY'}** "
+                f"(게이트 결과 {', '.join(gate['resolved']) or '비었음'} / "
+                f"기대 {', '.join(gate['expected_crops'])})"
+            )
+            if gate["leaked"]:
+                lines.append(f"  - ❌ 게이트에 섞인 타 작물: **{', '.join(gate['leaked'])}**")
+            lines.append("")
+
+        safety = r.get("safety_check")
+        if safety:
+            lines.append(
+                f"**⚠️ 농약 안전 고지: {'✅ 포함' if safety['status'] == 'PASS' else '❌ 누락'}** "
+                f"(근거 문서 태그: {', '.join(safety['safety_tags'])})\n"
+            )
 
         lines.append(f"- **사실성(F): {ev.get('faithfulness_score', '-')}/5** - {ev.get('faithfulness_reason', '')}")
         lines.append(f"- **관련성(A): {ev.get('answer_relevance_score', '-')}/5** - {ev.get('answer_relevance_reason', '')}")
@@ -762,8 +1004,14 @@ def evaluate_rag_pipeline(dataset_name=DEFAULT_DATASET, ids=None, types=None, sk
             score_line += f" I({ev.get('image_grounding_score', '-')})"
         score_line += f" | 근거 문서 {len(result['retrieved_docs'])}건"
         if result["crop_check"]:
-            icon = {"PASS": "✅", "FAIL": "❌", "N/A": "⚪"}[result["crop_check"]["status"]]
-            score_line += f" | 작물검사 {icon}{result['crop_check']['status']}"
+            status = result["crop_check"]["status"]
+            icon = {"PASS": "✅", "FAIL": "❌", "EMPTY": "🚫", "N/A": "⚪"}.get(status, "?")
+            score_line += f" | 작물검사 {icon}{status}"
+        if result.get("gate_check") and result["gate_check"]["status"] != "PASS":
+            gate = result["gate_check"]
+            score_line += f" | 게이트 {gate['status']}({','.join(gate['leaked']) or '비었음'})"
+        if result.get("safety_check"):
+            score_line += f" | 농약고지 {'✅' if result['safety_check']['status'] == 'PASS' else '❌누락'}"
         print(score_line)
 
     report_path = TESTS_DIR / f"eval_report_v2_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
@@ -771,10 +1019,26 @@ def evaluate_rag_pipeline(dataset_name=DEFAULT_DATASET, ids=None, types=None, sk
 
     checked = [r for r in results if r["crop_check"]]
     fails = [r for r in checked if r["crop_check"]["status"] == "FAIL"]
+    empties = [r for r in checked if r["crop_check"]["status"] == "EMPTY"]
     print(f"\n평가 완료! 리포트가 생성되었습니다: {report_path}")
     if checked:
-        print(f"작물 오매칭 검사: {len(checked) - len(fails)}/{len(checked)} 통과", end="")
+        # EMPTY(검색 0건)와 N/A는 통과가 아니므로 분자에 넣지 않는다
+        passes = [r for r in checked if r["crop_check"]["status"] == "PASS"]
+        print(f"작물 오매칭 검사: {len(passes)}/{len(checked)} 통과", end="")
         print(f" (위반 케이스: {', '.join(r['id'] for r in fails)})" if fails else " — 위반 없음")
+    if empties:
+        print(f"🚫 검색 0건 케이스 {len(empties)}개: {', '.join(r['id'] for r in empties)}"
+              " — 오매칭 이전에 검색 자체를 확인해야 합니다.")
+    gated = [r for r in results if r.get("gate_check")]
+    gate_fails = [r for r in gated if r["gate_check"]["status"] == "FAIL"]
+    if gate_fails:
+        print(f"❌ 작물 게이트에 타 작물 유입 {len(gate_fails)}개: "
+              + ", ".join(f"{r['id']}({','.join(r['gate_check']['leaked'])})" for r in gate_fails))
+    safety_fails = [r for r in results
+                    if r.get("safety_check") and r["safety_check"]["status"] == "FAIL"]
+    if safety_fails:
+        print(f"❌ 농약 안전고지 누락 {len(safety_fails)}개: "
+              + ", ".join(r["id"] for r in safety_fails))
 
 
 if __name__ == "__main__":

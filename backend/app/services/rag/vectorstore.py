@@ -14,6 +14,10 @@ docs_json_path = backend_dir / "data" / "processed" / "gardening_docs.json"
 # 2단계(grade_or_rerank)에서 LLM이 엄격하게 정제(Precision)한다.
 VECTOR_MATCH_THRESHOLD = 0.25
 VECTOR_CANDIDATE_COUNT = 80
+# 작물 필터를 적용하기 전까지 유지하는 후보 풀 크기.
+# 필터보다 먼저 top_k(기본 8)로 자르면 해당 작물 문서가 컷에서 탈락해
+# 결과가 0건이 되므로, 필터를 통과한 뒤에 top_k로 자른다.
+CANDIDATE_POOL_SIZE = VECTOR_CANDIDATE_COUNT
 
 class SearchResult:
     def __init__(self, content: str, metadata: Dict[str, Any], score: float):
@@ -38,7 +42,11 @@ CARE_TERMS = {
 
 # 식물명/별칭 사전은 plant_catalog 테이블에서 TTL 캐시로 로드한다 (plant_terms.py).
 # DB 조회 실패 시 하드코딩된 기본 사전으로 자동 fallback 된다.
-from app.services.rag.plant_terms import get_plant_aliases, get_plant_terms
+from app.services.rag.plant_terms import (
+    get_plant_aliases,
+    get_plant_terms,
+    get_substring_match_plant_terms,
+)
 
 
 def expand_query_aliases(query: str) -> str:
@@ -82,6 +90,7 @@ def filter_by_specific_terms(
 ) -> List[SearchResult]:
     terms = specific_query_terms(query)
     known_plant_terms = get_plant_terms()
+    substring_plant_terms = get_substring_match_plant_terms()
     query_plant_terms = [term for term in terms if term in known_plant_terms]
 
     # plant_data(사용자가 등록한 식물의 name/species)에서 정규화된 작물명이 있으면
@@ -126,7 +135,10 @@ def filter_by_specific_terms(
                     metadata.get("excerpt"),
                 ]
             ).lower()
-            title_plant_terms = [term for term in known_plant_terms if term.lower() in title_haystack]
+            # 부분문자열 판정에는 1글자 작물명을 제외한 집합을 쓴다.
+            # '무'·'배'·'감'이 '겹무늬병'·'재배'·'감염' 같은 제목에 걸려 무관한 문서를
+            # 떨어뜨리는 것을 막는다 (plant_terms.MIN_SUBSTRING_TERM_LENGTH 참고).
+            title_plant_terms = [term for term in substring_plant_terms if term.lower() in title_haystack]
             if title_plant_terms and not any(term in plant_terms for term in title_plant_terms):
                 continue
             if any(term.lower() in haystack for term in plant_terms):
@@ -136,25 +148,40 @@ def filter_by_specific_terms(
             filtered.append(result)
     return filtered
 
-def _extract_crop_or_plant(item: Dict[str, Any], metadata: Dict[str, Any]) -> List[str]:
-    """행/메타데이터에서 작물·식물 태그를 뽑는다.
+def _extract_string_list(item: Dict[str, Any], metadata: Dict[str, Any], *keys: str) -> List[str]:
+    """행 최상위 컬럼과 metadata를 순서대로 확인해 문자열 리스트 태그를 뽑는다.
 
-    적재 스크립트(data/scripts/load_supabase_pgvector.py)는 최상위 crop_or_plant
-    컬럼이 아니라 metadata.cropOrPlant(camelCase)에 값을 채운다 — 실측 결과 청크의
-    약 98%가 metadata.cropOrPlant를 갖고 있다. 두 경로 모두 확인해 향후 최상위
-    컬럼이 채워지더라도 그대로 동작하게 한다.
+    적재 스크립트(data/scripts/load_supabase_pgvector.py)는 최상위 컬럼이 아니라
+    metadata의 camelCase 키에 값을 채운다 — 실측 결과 최상위 crop_or_plant /
+    safety_tags 컬럼은 전 행이 NULL이고 값은 metadata에만 존재한다. 두 경로 모두
+    확인해 향후 최상위 컬럼이 채워지더라도 그대로 동작하게 한다.
     """
-    raw = (
-        item.get("crop_or_plant")
-        or metadata.get("cropOrPlant")
-        or metadata.get("crop_or_plant")
-        or []
-    )
+    raw: Any = []
+    for key in keys:
+        raw = item.get(key) or metadata.get(key)
+        if raw:
+            break
     if isinstance(raw, str):
         raw = [raw]
     if not isinstance(raw, list):
         return []
     return [str(v).strip() for v in raw if str(v).strip()]
+
+
+def _extract_crop_or_plant(item: Dict[str, Any], metadata: Dict[str, Any]) -> List[str]:
+    """행/메타데이터에서 작물·식물 태그를 뽑는다."""
+    return _extract_string_list(item, metadata, "crop_or_plant", "cropOrPlant")
+
+
+def _extract_safety_tags(item: Dict[str, Any], metadata: Dict[str, Any]) -> List[str]:
+    """행/메타데이터에서 안전 태그를 뽑는다.
+
+    data/PIPELINE.md 기준으로 데이터팀은 pesticide_caution, expert_check_required,
+    label_check_required, not_diagnosis 태그를 적재한다. 답변 문구를 문자열로
+    추측하는 대신 이 태그를 근거로 안전 고지를 강제하기 위해 보존한다
+    (nodes_generation.safety_review 참고).
+    """
+    return _extract_string_list(item, metadata, "safety_tags", "safetyTags")
 
 
 def normalize_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,6 +196,8 @@ def normalize_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
         "section": item.get("section") or metadata.get("section") or metadata.get("category"),
         "excerpt": item.get("excerpt") or metadata.get("excerpt") or metadata.get("contentPreview"),
         "crop_or_plant": _extract_crop_or_plant(item, metadata),
+        "safety_tags": _extract_safety_tags(item, metadata),
+        "usage_scope": item.get("usage_scope") or metadata.get("usageScope") or metadata.get("usage_scope"),
     }
 
 def score_text(query_tokens: List[str], text: str, keywords: List[str]) -> float:
@@ -384,14 +413,22 @@ def search_documents(
                     metadata=metadata,
                     score=float(item.get("similarity") or item.get("score") or 0.0)
                 ))
-            keyword_results = supabase_keyword_search(query, top_k)
+            keyword_results = supabase_keyword_search(query, CANDIDATE_POOL_SIZE)
             if vector_results or keyword_results:
-                merged_results = merge_results(keyword_results, vector_results, top_k=top_k)
+                # 작물 필터를 거치기 전에 top_k로 자르면 안 된다. 1단계에서 후보를
+                # VECTOR_CANDIDATE_COUNT개까지 넓게 모으는 이유가 사라지고, 해당 작물
+                # 문서가 상위 top_k 밖에 있으면(실측: 토마토 문서가 벡터 순위 10위)
+                # 필터에 도달하지 못해 결과가 0건이 된다. 병합 → 필터 → 절단 순으로 둔다.
+                merged_results = merge_results(
+                    keyword_results, vector_results, top_k=CANDIDATE_POOL_SIZE
+                )
                 return filter_by_specific_terms(query, merged_results, target_crop_terms)[:top_k]
         except Exception as e:
             print(f"[RAG SEARCH WARNING] Supabase pgvector RPC 검색 중 오류 발생, Supabase keyword fallback 전환: {e}")
 
-    supabase_results = supabase_keyword_search(query, top_k)
+    supabase_results = supabase_keyword_search(query, CANDIDATE_POOL_SIZE)
     if supabase_results:
         return filter_by_specific_terms(query, supabase_results, target_crop_terms)[:top_k]
-    return filter_by_specific_terms(query, fallback_keyword_search(query, top_k), target_crop_terms)[:top_k]
+    return filter_by_specific_terms(
+        query, fallback_keyword_search(query, CANDIDATE_POOL_SIZE), target_crop_terms
+    )[:top_k]
