@@ -90,10 +90,11 @@ def chunk_record(doc: dict[str, Any], text: str, index: int) -> dict[str, Any]:
     safety_tags = merge_safety_tags(doc.get("safety_tags"))
     content = normalize_text(text)
     crop_or_plant = list(doc.get("crop_or_plant", []))
-    inference_text = doc.get("title", "") if source_key.startswith("nongsaro") else f"{doc.get('title', '')} {content}"
-    for name in infer_crop_or_plant(inference_text):
-        if name not in crop_or_plant:
-            crop_or_plant.append(name)
+    if source_key != "plantsolve_care":
+        inference_text = doc.get("title", "") if source_key.startswith("nongsaro") else f"{doc.get('title', '')} {content}"
+        for name in infer_crop_or_plant(inference_text):
+            if name not in crop_or_plant:
+                crop_or_plant.append(name)
     symptom_keywords = doc.get("symptom_keywords") or detect_symptom_keywords(content)
     if not symptom_keywords:
         symptom_keywords = [doc.get("category") or "general_reference"]

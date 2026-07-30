@@ -70,6 +70,7 @@ def chunk_payload(row: dict[str, Any], include_metadata: bool = False) -> dict[s
         "text": row["text"],
         "embedding": row["embedding"],
         "symptom_keywords": row.get("symptom_keywords", []),
+        "crop_or_plant": row.get("crop_or_plant", []),
     }
     if include_metadata:
         payload["metadata"] = metadata

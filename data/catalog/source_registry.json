@@ -215,6 +215,23 @@
         "not_diagnosis"
       ],
       "notes": "국립수목원 OpenAPI를 통해 수집된 60종 식물의 형태, 생태, 꽃/잎 특징 정보"
+    },
+    {
+      "source_id": "plantsolve_care",
+      "title": "PlantSolve 식물 생육 관리",
+      "publisher": "PlantSolve",
+      "url": "https://www.plantsolve.com/developers/",
+      "license": "CC BY 4.0",
+      "category": "indoor_care",
+      "priority": 2,
+      "collection_mode": "api_with_exact_scientific_name_match",
+      "api_key_env": null,
+      "usage_scope": "rag",
+      "safety_tags": [
+        "not_diagnosis",
+        "source_terms_required"
+      ],
+      "notes": "공식 학명과 내부 카탈로그가 완전 일치하는 항목의 일반 생육 정보만 사용한다. placeholder 요약, troubleshooting, 독성 단정은 제외하고 원문 링크와 출처를 표시한다."
     }
   ]
 }
