@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 
 from app.db import session
 from app.core.config import settings
+from app.services.llm import primary_requests_allowed
 
 # 프로젝트 루트 경로 (Fallback 파일 조회용)
 backend_dir = Path(__file__).resolve().parents[4]
@@ -380,7 +381,7 @@ def search_documents(
     """
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     
-    if openai_key:
+    if openai_key and primary_requests_allowed():
         try:
             from openai import OpenAI
             openai_client = OpenAI(api_key=openai_key, timeout=10.0, max_retries=0)
@@ -388,7 +389,7 @@ def search_documents(
             # 1. OpenAI 임베딩 생성 (1536차원)
             res = openai_client.embeddings.create(
                 input=[query],
-                model="text-embedding-3-small"
+                model=settings.EMBEDDING_MODEL
             )
             query_vector = res.data[0].embedding
             

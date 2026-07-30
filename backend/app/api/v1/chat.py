@@ -24,6 +24,7 @@ from app.schemas.chat import (
     SessionFeedbackStats,
 )
 from app.services.rag.pipeline import chat_mode_prefix, run_rag_workflow, run_rag_workflow_stream
+from app.services.llm import SELECTABLE_OPENAI_CHAT_MODELS, get_llm_runtime_status
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,17 @@ def fallback_session_title(db: Client, plant_id: str | None, created_at: str, ga
 
 @router.get("/model-info", response_model=ChatModelInfo, summary="식물 상담 AI 모델 정보 조회")
 def get_chat_model_info():
+    runtime = get_llm_runtime_status()
     return ChatModelInfo(
         chatModel=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
-        visionModel=os.getenv("VISION_MODEL") or settings.VISION_MODEL
+        visionModel=os.getenv("VISION_MODEL") or settings.VISION_MODEL,
+        fallbackEnabled=runtime["fallbackEnabled"],
+        localChatModel=runtime["localChatModel"],
+        localVisionModel=runtime["localVisionModel"],
+        localAuxiliaryEnabled=runtime["localAuxiliaryEnabled"],
+        primaryCircuit=runtime["primaryCircuit"],
+        primaryConfigured=runtime["primaryConfigured"],
+        availableOpenAIModels=list(SELECTABLE_OPENAI_CHAT_MODELS),
     )
 
 @router.post("/plant-care", response_model=PlantCareChatResponse, status_code=status.HTTP_200_OK, summary="식물 케어 RAG 상담 실행")
@@ -81,7 +90,9 @@ def consult_plant_care(
             new_session=request.newSession,
             response_mode=request.responseMode,
             recent_messages=[message.model_dump() for message in request.recentMessages],
-            session_id=str(request.sessionId) if request.sessionId else None
+            session_id=str(request.sessionId) if request.sessionId else None,
+            llm_provider=request.llmProvider,
+            llm_model=request.llmModel,
         )
         
         citations = []
@@ -103,7 +114,9 @@ def consult_plant_care(
             citations=citations,
             safetyNotice=final_answer.get("safetyNotice"),
             sessionId=uuid.UUID(final_answer["sessionId"]) if final_answer.get("sessionId") else None,
-            messageId=uuid.UUID(final_answer["messageId"]) if final_answer.get("messageId") else None
+            messageId=uuid.UUID(final_answer["messageId"]) if final_answer.get("messageId") else None,
+            llmProvider=final_answer.get("llmProvider"),
+            llmModel=final_answer.get("llmModel"),
         )
     except ValueError as e:
         raise HTTPException(
@@ -144,7 +157,9 @@ def consult_plant_care_stream(
                 new_session=request.newSession,
                 response_mode=request.responseMode,
                 recent_messages=[message.model_dump() for message in request.recentMessages],
-                session_id=str(request.sessionId) if request.sessionId else None
+                session_id=str(request.sessionId) if request.sessionId else None,
+                llm_provider=request.llmProvider,
+                llm_model=request.llmModel,
             ):
                 yield sse(event)
         except ValueError as e:

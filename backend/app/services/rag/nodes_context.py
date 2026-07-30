@@ -241,7 +241,16 @@ def extract_image_signals(state: AgentState) -> Dict[str, Any]:
 
     if photo and photo.get("storage_path"):
         try:
-            analysis = analyze_plant_image(db, photo["storage_path"], state["question"])
+            if state.get("llm_provider"):
+                analysis = analyze_plant_image(
+                    db,
+                    photo["storage_path"],
+                    state["question"],
+                    primary_model=state.get("llm_model"),
+                    preferred_provider=state["llm_provider"],
+                )
+            else:
+                analysis = analyze_plant_image(db, photo["storage_path"], state["question"])
             signals.extend(analysis.get("signals") or [])
             image_description = analysis.get("description") or ""
         except VisionAnalysisError as exc:

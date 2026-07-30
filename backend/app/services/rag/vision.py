@@ -7,14 +7,15 @@ It must not make a final disease diagnosis or pesticide recommendation.
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from supabase import Client
 
 from app.core.config import settings
 from app.db.session import get_supabase_service_client
+from app.services.llm import chat_completion
+from app.services.llm.schemas import VisionObservation, parse_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ VISION_SYSTEM_PROMPT = (
     "규칙:\n"
     "- 질병명이나 병해충 종을 확정하지 마세요. '~가능성', '~로 보이는 증상', '~가 관찰됨' 수준으로만 표현합니다.\n"
     "- 농약/약제 처방을 하지 마세요.\n"
+    "- 사진만으로 식물 종류, 증상의 원인, 흔히 발생하는 식물군을 추정하지 마세요.\n"
+    "- description에는 색, 형태, 위치처럼 사진에서 직접 확인되는 사실만 쓰고 원인이나 관리법을 넣지 마세요.\n"
     "- 사진에 식물이 없거나 너무 흐릿하면 severity를 '판독불가'로 두세요.\n"
     "- 반드시 JSON 객체만 출력하세요.\n\n"
     "출력 JSON 스키마:\n"
@@ -72,33 +75,31 @@ def create_signed_image_url(db: Client, storage_path: str) -> str:
     raise VisionAnalysisError("사진 접근용 signed URL 발급에 실패했습니다.") from last_error
 
 
-def _parse_json_object(raw_content: str) -> dict[str, Any]:
-    text = raw_content.strip()
-    if text.startswith("```"):
-        text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(text)
-
-
-def analyze_plant_image(db: Client, storage_path: str, question: str) -> dict[str, Any]:
+def analyze_plant_image(
+    db: Client,
+    storage_path: str,
+    question: str,
+    *,
+    primary_model: str | None = None,
+    preferred_provider: Literal["openai", "local"] = "openai",
+) -> dict[str, Any]:
     """
     Analyze an uploaded plant image and return observation signals for RAG.
 
     Returns:
         signals, description, affectedParts, severity
     """
-    if not settings.OPENAI_API_KEY:
-        raise VisionAnalysisError("OPENAI_API_KEY가 설정되지 않아 사진 분석을 수행할 수 없습니다.")
-
     image_url = create_signed_image_url(db, storage_path)
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=18.0, max_retries=0)
-        response = client.chat.completions.create(
-            model=settings.VISION_MODEL,
+        completion = chat_completion(
+            primary_model=primary_model or settings.VISION_MODEL,
+            local_model=settings.LOCAL_VISION_MODEL,
             temperature=0.1,
             response_format={"type": "json_object"},
+            primary_timeout=18.0,
+            max_tokens=700,
+            preferred_provider=preferred_provider,
             messages=[
                 {"role": "system", "content": VISION_SYSTEM_PROMPT},
                 {
@@ -116,15 +117,17 @@ def analyze_plant_image(db: Client, storage_path: str, question: str) -> dict[st
                 },
             ],
         )
-        parsed = _parse_json_object(str(response.choices[0].message.content or ""))
+        parsed = VisionObservation.model_validate(
+            parse_json_object(str(completion.response.choices[0].message.content or ""))
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Vision image analysis failed", exc_info=True)
         raise VisionAnalysisError(f"멀티모달 사진 분석에 실패했습니다: {exc}") from exc
 
-    symptoms = parsed.get("observedSymptoms") or []
-    affected_parts = parsed.get("affectedParts") or []
-    severity = str(parsed.get("severity") or "")
-    description = str(parsed.get("description") or "")
+    symptoms = parsed.observedSymptoms
+    affected_parts = parsed.affectedParts
+    severity = parsed.severity
+    description = parsed.description
 
     signals = [str(item) for item in symptoms if str(item).strip()]
     if affected_parts:

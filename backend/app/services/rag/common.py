@@ -134,6 +134,10 @@ class AgentState(TypedDict):
     photo_id: Optional[str]
     question: str
     response_mode: str
+    llm_provider: Optional[str]
+    llm_model: Optional[str]
+    llm_provider_used: Optional[str]
+    llm_model_used: Optional[str]
     request_chat_history: List[Dict[str, Any]]
     chat_history: List[Dict[str, Any]]
     target_session_id: Optional[str]

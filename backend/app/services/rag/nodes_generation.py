@@ -4,6 +4,8 @@ import os
 from typing import Dict, Any
 
 from app.core.config import settings
+from app.services.llm import chat_completion
+from app.services.llm.schemas import GeneratedAnswer, parse_json_object
 from app.services.rag.common import (
     AgentState,
     extract_user_name,
@@ -26,6 +28,8 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
     image_description = state.get("image_description") or "사진 분석 결과 없음"
     vision_error = state.get("vision_error")
     response_mode = state.get("response_mode") or "expert"
+    requested_provider = state.get("llm_provider") or "openai"
+    requested_model = state.get("llm_model") or os.getenv("CHAT_MODEL") or settings.CHAT_MODEL
     plant = state.get("plant_data") or {}
     is_garden = plant.get("context_type") == "garden"
     is_companion_mode = response_mode == "companion" and not is_garden
@@ -108,11 +112,8 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
             "section": metadata.get("section") or metadata.get("category") or metadata.get("source_type")
         })
         
-    if openai_key:
+    if openai_key or settings.LLM_FALLBACK_ENABLED:
         try:
-            import json
-            from openai import OpenAI
-            
             docs_text = "\n\n".join([
                 f"--- 문서: {(d.get('metadata') or {}).get('title') or '출처 미상'} ---\n{d.get('content') or ''}"
                 for d in docs
@@ -137,11 +138,14 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                     "구성 식물마다 관리 요구가 다르면 식물별로 구분하고, 텃밭 전체에 일괄 적용하면 위험한 조치는 권하지 마세요. "
                 )
 
-            client = OpenAI(api_key=openai_key, timeout=18.0, max_retries=0)
-            res = client.chat.completions.create(
-                model=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+            completion = chat_completion(
+                primary_model=requested_model,
+                local_model=settings.LOCAL_CHAT_MODEL,
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                primary_timeout=18.0,
+                max_tokens=1200,
+                preferred_provider=requested_provider,
                 messages=[
                     {
                         "role": "system",
@@ -174,22 +178,22 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                 ]
             )
 
-            raw_content = str(res.choices[0].message.content or "").strip()
-            if raw_content.startswith("```"):
-                raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            ans = json.loads(raw_content)
+            raw_content = str(completion.response.choices[0].message.content or "").strip()
+            ans = GeneratedAnswer.model_validate(parse_json_object(raw_content))
             return {
                 "draft_answer": {
-                    "summary": ans.get("summary") or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
-                    "possibleCauses": ans.get("possibleCauses") or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
-                    "todayActions": ans.get("todayActions") or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
-                    "observationChecklist": ans.get("observationChecklist") or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
+                    "summary": ans.summary or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
+                    "possibleCauses": ans.possibleCauses or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
+                    "todayActions": ans.todayActions or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
+                    "observationChecklist": ans.observationChecklist or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
                     "citations": citations
-                }
+                },
+                "llm_provider_used": completion.provider,
+                "llm_model_used": completion.model,
             }
         except Exception as exc:
             logger.warning(
-                "OpenAI answer generation failed; using evidence fallback (model=%s, %s: %s)",
+                "AI answer generation failed; using evidence fallback (model=%s, %s: %s)",
                 os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
                 type(exc).__name__,
                 exc,

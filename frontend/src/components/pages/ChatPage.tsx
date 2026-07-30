@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type 
 import {
   askPlantCareStream,
   deleteChatSession,
+  getChatModelInfo,
   getPlants,
   listGardens,
   listChatMessages,
@@ -14,9 +15,18 @@ import dashboardPlantImage from "../../assets/dashboard-plant.webp";
 import consultationGardenIcon from "../../assets/consultation-garden.svg";
 import consultationPlantIcon from "../../assets/consultation-plant.svg";
 import { defaultPlantImages, type DesignPage } from "../../lib/constants";
-import { getSelectedGardenId, getSelectedPlantId, setSelectedGardenId, setSelectedPlantId } from "../../lib/storage";
+import {
+  getSelectedGardenId,
+  getSelectedPlantId,
+  getStoredChatModelSelection,
+  setSelectedGardenId,
+  setSelectedPlantId,
+  setStoredChatModelSelection
+} from "../../lib/storage";
 import type {
   ChatFeedbackRating,
+  ChatModelInfo,
+  ChatModelSelection,
   ChatMessage,
   ChatProgressEvent,
   ChatResponseMode,
@@ -52,6 +62,25 @@ const gardenQuickQuestions = [
 
 const acceptedPhotoTypes = ["image/jpeg", "image/png", "image/webp"];
 const maxPhotoBytes = 8 * 1024 * 1024;
+const openAIModelLabels: Record<Exclude<ChatModelSelection, "local">, string> = {
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.5": "GPT-5.5",
+  "gpt-5.6-sol": "GPT-5.6"
+};
+const defaultOpenAIModels = Object.keys(openAIModelLabels) as Exclude<ChatModelSelection, "local">[];
+
+function selectedModelLabel(selection: ChatModelSelection, modelInfo?: ChatModelInfo) {
+  return selection === "local"
+    ? `Local · ${modelInfo?.localChatModel || "qwen3-vl:4b-instruct"}`
+    : `OpenAI · ${openAIModelLabels[selection]}`;
+}
+
+function responseModelLabel(response: PlantCareChatResponse) {
+  if (!response.llmProvider || !response.llmModel) return "";
+  if (response.llmProvider === "local") return `Local · ${response.llmModel}`;
+  const label = openAIModelLabels[response.llmModel as Exclude<ChatModelSelection, "local">] || response.llmModel;
+  return `OpenAI · ${label}`;
+}
 
 function pickImageFile(files?: FileList | null) {
   if (!files) return null;
@@ -130,6 +159,8 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const [photoPreview, setPhotoPreview] = useState("");
   const [draggingPhoto, setDraggingPhoto] = useState(false);
   const [mode, setMode] = useState<ChatResponseMode>("expert");
+  const [modelSelection, setModelSelection] = useState<ChatModelSelection>(() => getStoredChatModelSelection() || "gpt-5.4");
+  const [modelInfo, setModelInfo] = useState<ChatModelInfo>();
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string>();
@@ -146,6 +177,37 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const [revealingMessageId, setRevealingMessageId] = useState<string>();
   const isGardenConsultation = Boolean(selectedGardenId);
   const consultationTargetId = selectedGardenId || selectedPlantId;
+
+  useEffect(() => {
+    let active = true;
+    getChatModelInfo()
+      .then((info) => {
+        if (!active) return;
+        setModelInfo(info);
+        setModelSelection((current) => {
+          const openAIAvailable = current !== "local" && info.primaryConfigured && info.availableOpenAIModels.includes(current);
+          const localAvailable = current === "local" && info.fallbackEnabled;
+          if (openAIAvailable || localAvailable) return current;
+
+          const configuredModel = info.availableOpenAIModels.includes(info.chatModel as Exclude<ChatModelSelection, "local">)
+            ? info.chatModel as Exclude<ChatModelSelection, "local">
+            : info.availableOpenAIModels[0] || "gpt-5.4";
+          const nextSelection: ChatModelSelection = info.primaryConfigured
+            ? configuredModel
+            : info.fallbackEnabled
+              ? "local"
+              : configuredModel;
+          setStoredChatModelSelection(nextSelection);
+          return nextSelection;
+        });
+      })
+      .catch(() => {
+        // 상담 자체는 기존 API 오류 처리 흐름을 유지하고, 모델 정보 표시만 기본값을 사용합니다.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -445,6 +507,8 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
           sessionId,
           newSession: startingNewSession || !sessionId,
           responseMode: mode,
+          llmProvider: modelSelection === "local" ? "local" : "openai",
+          llmModel: modelSelection === "local" ? undefined : modelSelection,
           recentMessages
         },
         setProgress
@@ -497,6 +561,15 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const selectedPlantImage = selectedPlant?.imageUrl && !defaultPlantImages.includes(selectedPlant.imageUrl)
     ? selectedPlant.imageUrl
     : dashboardPlantImage;
+  const selectedModelAvailable = !modelInfo
+    || (modelSelection === "local" ? modelInfo.fallbackEnabled : modelInfo.primaryConfigured);
+  const selectedModelStatus = modelSelection === "local"
+    ? selectedModelAvailable ? "로컬 연결 설정됨" : "로컬 연결 설정 필요"
+    : !selectedModelAvailable
+      ? "OpenAI API 키 설정 필요"
+      : modelInfo?.primaryCircuit.state === "open"
+        ? "OpenAI 장애 감지 · 로컬 fallback 대기"
+        : "OpenAI 연결 설정됨";
 
   return (
     <div className="chat-page">
@@ -530,6 +603,39 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
             </select>
           )}
         </label>
+
+        <div className="chat-model-picker">
+          <label className="field field-on-dark chat-model-field">
+            <span>답변 모델</span>
+            <select
+              aria-label="상담 답변 모델 선택"
+              disabled={submitting || loadingConversation}
+              onChange={(event) => {
+                const nextSelection = event.target.value as ChatModelSelection;
+                setModelSelection(nextSelection);
+                setStoredChatModelSelection(nextSelection);
+              }}
+              value={modelSelection}
+            >
+              <optgroup label="OpenAI">
+                {defaultOpenAIModels.map((model) => (
+                  <option key={model} value={model} disabled={Boolean(modelInfo && (!modelInfo.primaryConfigured || !modelInfo.availableOpenAIModels.includes(model)))}>
+                    {openAIModelLabels[model]}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Local">
+                <option value="local" disabled={Boolean(modelInfo && !modelInfo.fallbackEnabled)}>
+                  {modelInfo?.localChatModel || "qwen3-vl:4b-instruct"}
+                </option>
+              </optgroup>
+            </select>
+          </label>
+          <div className="chat-model-status" aria-live="polite">
+            <span className={!selectedModelAvailable ? "is-unavailable" : modelSelection === "local" ? "is-local" : "is-openai"} aria-hidden="true" />
+            <div><small>{selectedModelStatus}</small><strong>{selectedModelLabel(modelSelection, modelInfo)}</strong></div>
+          </div>
+        </div>
 
         {!isGardenConsultation && <div className="mode-selector" role="group" aria-label="상담 모드">
           <button className={mode === "expert" ? "is-active" : ""} type="button" onClick={() => setMode("expert")}><span className="material-symbols-outlined" aria-hidden="true">format_list_bulleted</span><span><strong>식물 관리 상담</strong><small>근거와 행동 중심</small></span></button>
@@ -631,6 +737,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
           ) : (
             <article className={item.id === revealingMessageId ? "message message-assistant is-revealing" : "message message-assistant"} key={item.id} ref={item.id === revealingMessageId ? latestAnswerRef : undefined}>
               <span className="message-label">{mode === "expert" ? "Farm하니" : selectedPlant?.name || "내 식물"}</span>
+              {responseModelLabel(item.response) && <span className={`message-model-badge is-${item.response.llmProvider}`}>{responseModelLabel(item.response)}</span>}
               {item.saved && item.response.possibleCauses.length === 0 && item.response.todayActions.length === 0 ? <p className="saved-answer">{item.response.summary}</p> : (
                 <>
                   <div className="answer-summary"><span>관찰 요약</span><p>{item.response.summary}</p></div>

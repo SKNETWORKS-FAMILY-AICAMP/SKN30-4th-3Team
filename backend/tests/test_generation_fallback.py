@@ -41,6 +41,7 @@ def test_fallback_uses_current_question_not_all_document_keywords(monkeypatch):
 def test_generation_notice_is_included_in_safety_notice(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(nodes_generation.settings, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(nodes_generation.settings, "LLM_FALLBACK_ENABLED", False)
     result = nodes_generation.generate_answer(fallback_state("현재 상태를 전반적으로 확인해 주세요"))
 
     final = nodes_generation.safety_review({

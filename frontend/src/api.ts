@@ -3,6 +3,7 @@ import type {
   CareLog,
   ChatFeedbackItem,
   ChatFeedbackRating,
+  ChatLLMProvider,
   ChatMessage,
   ChatMemoryMessage,
   ChatModelInfo,
@@ -16,6 +17,7 @@ import type {
   PlantCareChatResponse,
   PlantCatalogItem,
   PlantPhoto,
+  OpenAIChatModel,
   SessionFeedbackStats,
   UploadSignedUrlResponse,
   WateringReminder
@@ -710,6 +712,8 @@ export async function askPlantCare(
     sessionId?: string;
     newSession?: boolean;
     responseMode?: ChatResponseMode;
+    llmProvider?: ChatLLMProvider;
+    llmModel?: OpenAIChatModel;
     recentMessages?: ChatMemoryMessage[];
   } = {}
 ): Promise<PlantCareChatResponse> {
@@ -727,6 +731,8 @@ export async function askPlantCare(
       sessionId: options.sessionId,
       newSession: options.newSession ?? false,
       responseMode: options.responseMode ?? "expert",
+      llmProvider: options.llmProvider,
+      llmModel: options.llmModel,
       recentMessages: options.recentMessages ?? [],
       question
     })
@@ -743,6 +749,8 @@ export async function askPlantCareStream(
     sessionId?: string;
     newSession?: boolean;
     responseMode?: ChatResponseMode;
+    llmProvider?: ChatLLMProvider;
+    llmModel?: OpenAIChatModel;
     recentMessages?: ChatMemoryMessage[];
   } = {},
   onProgress?: (progress: ChatProgressEvent) => void
@@ -768,6 +776,8 @@ export async function askPlantCareStream(
       sessionId: options.sessionId,
       newSession: options.newSession ?? false,
       responseMode: options.responseMode ?? "expert",
+      llmProvider: options.llmProvider,
+      llmModel: options.llmModel,
       recentMessages: options.recentMessages ?? [],
       question
   });
@@ -920,6 +930,19 @@ export async function getTodayChecklist(): Promise<ChecklistTask[]> {
 }
 
 export async function getChatModelInfo(): Promise<ChatModelInfo> {
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    return {
+      chatModel: "gpt-5.4",
+      visionModel: "gpt-5.4",
+      fallbackEnabled: true,
+      localChatModel: "qwen3-vl:4b-instruct",
+      localVisionModel: "qwen3-vl:4b-instruct",
+      localAuxiliaryEnabled: false,
+      primaryCircuit: { state: "closed", failureCount: 0, retryAfterSeconds: 0 },
+      primaryConfigured: true,
+      availableOpenAIModels: ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
+    };
+  }
   return request<ChatModelInfo>("/api/v1/chat/model-info", { auth: false });
 }
 
