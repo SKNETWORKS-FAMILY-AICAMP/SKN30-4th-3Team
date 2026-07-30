@@ -229,7 +229,7 @@ def base_answer_state(docs, question="잎이 노랗게 변해요", **overrides):
 def test_retrieval_returns_documents(monkeypatch):
     captured = {}
 
-    def fake_search(query, top_k=8):
+    def fake_search(query, top_k=8, target_crop_terms=None):
         captured["query"] = query
         captured["top_k"] = top_k
         return [SearchResult("과습 시 황화가 발생합니다.", {"source_id": "S1", "title": "물관리"}, 0.88)]
@@ -257,7 +257,7 @@ def test_retrieval_returns_documents(monkeypatch):
 def test_retrieval_skipped_for_smalltalk(monkeypatch):
     called = {"n": 0}
 
-    def fake_search(query, top_k=8):
+    def fake_search(query, top_k=8, target_crop_terms=None):
         called["n"] += 1
         return []
 
@@ -558,7 +558,7 @@ def test_persist_reuses_resolved_session():
 # A9. E2E: 그래프 전체 흐름 (검색·LLM 목킹)
 # ---------------------------------------------------------------------------
 def test_e2e_plant_care_flow(monkeypatch, fake_llm):
-    def fake_search(query, top_k=8):
+    def fake_search(query, top_k=8, target_crop_terms=None):
         return [
             SearchResult(
                 "과습 시 몬스테라 잎이 노랗게 변할 수 있습니다.",

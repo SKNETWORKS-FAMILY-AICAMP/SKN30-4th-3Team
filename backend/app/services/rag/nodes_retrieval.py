@@ -5,6 +5,7 @@ from typing import Dict, Any
 
 from app.core.config import settings
 from app.services.rag.common import AgentState, is_smalltalk_question
+from app.services.rag.plant_terms import resolve_target_crop_terms
 from app.services.rag.vectorstore import search_documents
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,13 @@ def retrieve_docs(state: AgentState) -> Dict[str, Any]:
     query = " ".join(dict.fromkeys(part.strip() for part in query_parts if part and part.strip()))
     if not query.strip():
         query = generated_query
-    search_results = search_documents(query, top_k=8)
-    
+
+    # 사용자가 등록한 식물의 name/species를 도감 용어로 정규화해, rag_chunks의
+    # crop_or_plant 구조화 태그와 직접 비교할 작물명 후보를 만든다. 자유 텍스트 쿼리
+    # 파싱보다 신뢰도가 높아 근연종(가지과 등) 오매칭을 결정적으로 차단할 수 있다.
+    target_crop_terms = resolve_target_crop_terms(plant.get("name"), plant.get("species"))
+    search_results = search_documents(query, top_k=8, target_crop_terms=target_crop_terms)
+
     docs = []
     for res in search_results:
         docs.append({

@@ -323,11 +323,45 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
         "generation_notice": generation_notice
     }
 
+# 검색된 근거 문서의 안전 태그에 따라 강제로 덧붙이는 고지 문구.
+# 답변 문장에 "농약" 같은 단어가 등장하지 않아도 근거가 농약 자료라면 고지해야 한다
+# (AGENTS.md 절대규칙 6항, data/PIPELINE.md의 pesticide_caution 규정).
+PESTICIDE_CAUTION_NOTICE = (
+    "이 답변의 근거 자료에는 농약 정보가 포함되어 있습니다. 특정 약제를 처방하는 것이 아니며, "
+    "사용 전 제품 라벨의 적용 작물·희석 배수·사용 시기·수확 전 사용 가능 일수를 직접 확인하고 "
+    "안전사용기준을 준수해야 합니다. 실제 살포 판단은 농업기술센터 등 전문가 확인을 거치십시오."
+)
+LABEL_CHECK_NOTICE = (
+    "이 답변의 근거 자료는 제품 라벨 확인이 필요한 정보를 포함합니다. "
+    "적용 작물과 사용 기준을 라벨에서 직접 확인하십시오."
+)
+ACTION_SAFETY_KEYWORDS = ("농약", "살충", "살균", "약제")
+
+
+def collect_document_safety_tags(docs: Any) -> list:
+    """검색된 근거 문서에서 안전 태그를 중복 없이 수집한다 (등장 순서 유지)."""
+    tags: list = []
+    for doc in docs or []:
+        if not isinstance(doc, dict):
+            continue
+        metadata = doc.get("metadata") or {}
+        raw = metadata.get("safety_tags") or metadata.get("safetyTags") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for tag in raw:
+            tag = str(tag).strip()
+            if tag and tag not in tags:
+                tags.append(tag)
+    return tags
+
+
 # 8. safety_review 노드
 def safety_review(state: AgentState) -> Dict[str, Any]:
     draft = state["draft_answer"]
     response_mode = state.get("response_mode") or "expert"
-    
+
     if response_mode == "companion":
         safety_notice = "친근한 대화 모드의 답변이지만, 실제 관리는 입력된 내용과 공식 지침서에 기반한 참고 가이드입니다. 증상이 지속되면 전문가 확인을 권장합니다."
     else:
@@ -335,14 +369,21 @@ def safety_review(state: AgentState) -> Dict[str, Any]:
 
     if state.get("generation_notice"):
         safety_notice = f"{state['generation_notice']} {safety_notice}"
-    
+
+    # 답변 문구가 아니라 검색된 근거 문서의 태그를 기준으로 고지를 결정한다.
+    document_safety_tags = collect_document_safety_tags(state.get("retrieved_docs"))
+    if "pesticide_caution" in document_safety_tags:
+        safety_notice = f"{safety_notice} {PESTICIDE_CAUTION_NOTICE}"
+    elif "label_check_required" in document_safety_tags:
+        safety_notice = f"{safety_notice} {LABEL_CHECK_NOTICE}"
+
     today_actions = []
     for act in draft["todayActions"]:
-        if "농약" in act or "살충" in act:
+        if any(keyword in act for keyword in ACTION_SAFETY_KEYWORDS):
             today_actions.append(f"{act} (안전사용기준 준수 및 전문가 상담 권장)")
         else:
             today_actions.append(act)
-            
+
     final_answer = {
         "summary": draft["summary"],
         "possibleCauses": draft["possibleCauses"],
