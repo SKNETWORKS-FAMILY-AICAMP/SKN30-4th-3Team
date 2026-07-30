@@ -8,6 +8,7 @@ from app.services.llm import chat_completion
 from app.services.llm.schemas import GeneratedAnswer, parse_json_object
 from app.services.rag.common import (
     AgentState,
+    document_safety_tags,
     extract_user_name,
     is_smalltalk_question,
     is_user_name_question,
@@ -346,6 +347,13 @@ LABEL_CHECK_NOTICE = (
     "이 답변의 근거 자료는 제품 라벨 확인이 필요한 정보를 포함합니다. "
     "적용 작물과 사용 기준을 라벨에서 직접 확인하십시오."
 )
+# 농약과 무관한 질문인데 검색 결과에 농약 자료가 섞여 pesticide_guard가
+# 근거에서 제외했을 때의 고지. 제외 사실을 숨기지 않고 사용자에게 알린다.
+OFF_TOPIC_PESTICIDE_NOTICE = (
+    "이번 질문은 농약 사용에 대한 문의가 아니어서, 검색 결과에 포함된 농약 관련 자료는 "
+    "답변 근거에서 제외했습니다. 농약·약제 사용이 필요하다고 판단되면 별도로 질문해 주시고, "
+    "실제 살포는 제품 라벨의 적용 작물·안전사용기준 확인과 전문가 상담을 거치십시오."
+)
 ACTION_SAFETY_KEYWORDS = ("농약", "살충", "살균", "약제")
 
 
@@ -353,17 +361,8 @@ def collect_document_safety_tags(docs: Any) -> list:
     """검색된 근거 문서에서 안전 태그를 중복 없이 수집한다 (등장 순서 유지)."""
     tags: list = []
     for doc in docs or []:
-        if not isinstance(doc, dict):
-            continue
-        metadata = doc.get("metadata") or {}
-        raw = metadata.get("safety_tags") or metadata.get("safetyTags") or []
-        if isinstance(raw, str):
-            raw = [raw]
-        if not isinstance(raw, list):
-            continue
-        for tag in raw:
-            tag = str(tag).strip()
-            if tag and tag not in tags:
+        for tag in document_safety_tags(doc):
+            if tag not in tags:
                 tags.append(tag)
     return tags
 
@@ -387,6 +386,11 @@ def safety_review(state: AgentState) -> Dict[str, Any]:
         safety_notice = f"{safety_notice} {PESTICIDE_CAUTION_NOTICE}"
     elif "label_check_required" in document_safety_tags:
         safety_notice = f"{safety_notice} {LABEL_CHECK_NOTICE}"
+
+    # 농약 무관 질문이라 농약 문서를 근거에서 뺐다면 그 사실을 알린다.
+    # 이 시점의 retrieved_docs에는 농약 문서가 없으므로 위 고지와 겹치지 않는다.
+    if state.get("pesticide_docs_filtered"):
+        safety_notice = f"{safety_notice} {OFF_TOPIC_PESTICIDE_NOTICE}"
 
     today_actions = []
     for act in draft["todayActions"]:
