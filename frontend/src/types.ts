@@ -4,6 +4,7 @@ export type Plant = {
   id: string;
   name: string;
   species?: string | null;
+  displaySpecies?: string;
   location?: string | null;
   sunlight?: string | null;
   createdAt: string;

@@ -37,6 +37,8 @@ const LOCAL_PLANT_PHOTOS_KEY = "farmhani_local_plant_photos";
 const LOCAL_GARDENS_KEY = "farmhani_local_gardens";
 const MAX_PHOTO_UPLOAD_BYTES = 8 * 1024 * 1024;
 let refreshSessionPromise: Promise<string | undefined> | undefined;
+const plantDisplaySpeciesCache = new Map<string, Promise<string | undefined>>();
+const HANGUL_PATTERN = /[가-힣]/;
 
 type RequestOptions = RequestInit & {
   auth?: boolean;
@@ -347,11 +349,41 @@ function fileToDataUrl(file: File) {
   });
 }
 
+async function resolvePlantDisplaySpecies(species?: string | null): Promise<string | undefined> {
+  const trimmedSpecies = species?.trim();
+  if (!trimmedSpecies) return undefined;
+  if (HANGUL_PATTERN.test(trimmedSpecies)) return trimmedSpecies;
+
+  const cacheKey = trimmedSpecies.toLowerCase();
+  const cached = plantDisplaySpeciesCache.get(cacheKey);
+  if (cached) return cached;
+
+  const pendingName = searchPlantCatalog(trimmedSpecies, 6)
+    .then((items) => {
+      const exactMatch = items.find((item) => item.species.trim().toLowerCase() === cacheKey);
+      const matchedItem = exactMatch ?? items.find((item) => HANGUL_PATTERN.test(item.name));
+      return matchedItem && HANGUL_PATTERN.test(matchedItem.name) ? matchedItem.name : undefined;
+    })
+    .catch(() => undefined);
+  plantDisplaySpeciesCache.set(cacheKey, pendingName);
+  return pendingName;
+}
+
+async function addPlantDisplaySpecies<T extends Plant>(plants: T[]): Promise<T[]> {
+  return Promise.all(
+    plants.map(async (plant) => ({
+      ...plant,
+      displaySpecies: await resolvePlantDisplaySpecies(plant.species)
+    }))
+  );
+}
+
 export async function getPlants(): Promise<Plant[]> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
-    return loadLocalPlants();
+    return addPlantDisplaySpecies(loadLocalPlants());
   }
-  return request<Plant[]>("/api/v1/plants");
+  const plants = await request<Plant[]>("/api/v1/plants");
+  return addPlantDisplaySpecies(plants);
 }
 
 // 텃밭(구획) 목록 — 도메인 확장(백엔드 미구현, mock/계약 우선)
@@ -412,13 +444,16 @@ export async function getPlant(plantId: string) {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const plant = loadLocalPlants().find((item) => item.id === plantId);
     if (!plant) throw new Error("식물 정보를 찾지 못했습니다.");
-    return {
+    const [plantWithDisplaySpecies] = await addPlantDisplaySpecies([{
       ...plant,
       careLogs: loadLocalCareLogs().filter((item) => item.plantId === plantId),
       photos: loadLocalPlantPhotos().filter((item) => item.plantId === plantId)
-    };
+    }]);
+    return plantWithDisplaySpecies;
   }
-  return request<Plant & { careLogs: CareLog[]; photos: PlantPhoto[] }>(`/api/v1/plants/${plantId}`);
+  const plant = await request<Plant & { careLogs: CareLog[]; photos: PlantPhoto[] }>(`/api/v1/plants/${plantId}`);
+  const [plantWithDisplaySpecies] = await addPlantDisplaySpecies([plant]);
+  return plantWithDisplaySpecies;
 }
 
 export async function updatePlant(
