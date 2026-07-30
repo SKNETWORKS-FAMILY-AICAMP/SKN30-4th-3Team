@@ -1,5 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createGarden, createPlant, listGardens, searchPlantCatalog, uploadPlantPhoto } from "../../api";
+import {
+  createGarden,
+  createPlant,
+  listGardens,
+  searchPlantCatalog,
+  storagePathToPublicUrl,
+  updatePlant,
+  uploadPlantPhoto
+} from "../../api";
 import type { DesignPage } from "../../lib/constants";
 import { setSelectedPlantId } from "../../lib/storage";
 import type { Garden, PlantCatalogItem } from "../../types";
@@ -106,7 +114,12 @@ export function AddPlantPage({ onNavigate, onAuthError }: AddPlantPageProps) {
       });
 
       if (photo) {
-        await uploadPlantPhoto(plant.id, photo, "등록 시 추가한 첫 관찰 사진");
+        const uploadedPhoto = await uploadPlantPhoto(plant.id, photo, "등록 시 추가한 첫 관찰 사진");
+        const imageUrl = storagePathToPublicUrl(uploadedPhoto.storagePath);
+        if (!imageUrl) {
+          throw new Error("업로드한 사진의 대표 이미지 URL을 생성하지 못했습니다.");
+        }
+        await updatePlant(plant.id, { imageUrl });
       }
 
       setSelectedPlantId(plant.id);
