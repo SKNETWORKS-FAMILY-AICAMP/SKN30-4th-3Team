@@ -151,6 +151,8 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
 
   const latestPhoto = plant.photos[0];
   const latestPhotoUrl = storagePathToPublicUrl(latestPhoto?.storagePath) || plant.imageUrl;
+  const displaySpecies = plant.displaySpecies || plant.species;
+  const showScientificName = Boolean(plant.displaySpecies && plant.species && plant.displaySpecies !== plant.species);
 
   return (
     <div className="page-container">
@@ -170,7 +172,8 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
         <div className="detail-copy">
           <span className="eyebrow">PLANT PROFILE</span>
           <h1>{plant.name}</h1>
-          <p className="species-name">{plant.species || "식물 종류 미등록"}</p>
+          <p className="species-name">{displaySpecies || "식물 종류 미등록"}</p>
+          {showScientificName && <p className="scientific-name">학명 {plant.species}</p>}
           <dl className="detail-facts">
             <div><span className="material-symbols-outlined" aria-hidden="true">location_on</span><div><dt>위치</dt><dd>{plant.location || "미등록"}</dd></div></div>
             <div><span className="material-symbols-outlined" aria-hidden="true">light_mode</span><div><dt>빛 환경</dt><dd>{plant.sunlight || "미등록"}</dd></div></div>

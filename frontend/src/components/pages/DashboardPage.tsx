@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createCareLog, getPlants, getTodayChecklist, getWateringReminders } from "../../api";
+import { createCareLog, deletePlant, getPlants, getTodayChecklist, getWateringReminders } from "../../api";
 import { PageState } from "../PageState";
 import { defaultPlantImages, type DesignPage } from "../../lib/constants";
 import { setSelectedPlantId } from "../../lib/storage";
@@ -31,6 +31,9 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
   const [query, setQuery] = useState("");
   const [checklistExpanded, setChecklistExpanded] = useState(true);
   const [wateringId, setWateringId] = useState<string>();
+  const [selectedPlantIds, setSelectedPlantIds] = useState<Set<string>>(() => new Set());
+  const [deletingPlants, setDeletingPlants] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -43,6 +46,8 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
         setPlants(plantRows);
         setChecklist(taskRows);
         setReminders(reminderRows);
+        const currentPlantIds = new Set(plantRows.map((plant) => plant.id));
+        setSelectedPlantIds((selectedIds) => new Set([...selectedIds].filter((id) => currentPlantIds.has(id))));
       })
       .catch((caughtError: unknown) => {
         if (!active || onAuthError(caughtError)) return;
@@ -87,6 +92,45 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
     });
   }
 
+  function togglePlantSelection(plantId: string) {
+    setSelectedPlantIds((selectedIds) => {
+      const nextIds = new Set(selectedIds);
+      if (nextIds.has(plantId)) nextIds.delete(plantId);
+      else nextIds.add(plantId);
+      return nextIds;
+    });
+  }
+
+  function toggleAllPlants() {
+    setSelectedPlantIds((selectedIds) => selectedIds.size === plants.length ? new Set() : new Set(plants.map((plant) => plant.id)));
+  }
+
+  async function handleDeleteSelectedPlants() {
+    const plantIds = [...selectedPlantIds];
+    if (plantIds.length === 0 || deletingPlants) return;
+    if (!window.confirm(`선택한 식물 ${plantIds.length}개와 연결된 관리 기록을 모두 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
+
+    setDeletingPlants(true);
+    setDeleteError("");
+    try {
+      const results = await Promise.allSettled(plantIds.map((plantId) => deletePlant(plantId)));
+      const deletedIds = new Set(plantIds.filter((_, index) => results[index].status === "fulfilled"));
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      const authFailure = failures.find((failure) => onAuthError(failure.reason));
+      if (authFailure) return;
+
+      setPlants((currentPlants) => currentPlants.filter((plant) => !deletedIds.has(plant.id)));
+      setSelectedPlantIds(new Set());
+      if (failures.length > 0) {
+        setDeleteError(`${deletedIds.size}개는 삭제했지만 ${failures.length}개는 삭제하지 못했습니다. 다시 선택해 주세요.`);
+      } else {
+        setReloadKey((value) => value + 1);
+      }
+    } finally {
+      setDeletingPlants(false);
+    }
+  }
+
   if (loading) return <PageState kind="loading" title="내 식물 기록을 불러오고 있어요" />;
   if (error) {
     return (
@@ -104,8 +148,9 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
   const openTasks = checklist.filter((task) => !task.done);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredPlants = plants.filter((plant) =>
-    [plant.name, plant.species, plant.location].some((value) => value?.toLowerCase().includes(normalizedQuery))
+    [plant.name, plant.displaySpecies, plant.species, plant.location].some((value) => value?.toLowerCase().includes(normalizedQuery))
   );
+  const allPlantsSelected = plants.length > 0 && selectedPlantIds.size === plants.length;
 
   return (
     <div className="page-container">
@@ -158,18 +203,42 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
               <span className="eyebrow">MY GREEN FAMILY</span>
               <h2 id="plants-title">내 식물</h2><p>식물을 선택하면 관리 기록과 상세 정보를 볼 수 있어요.</p>
             </div>
-            <label className="search-field">
-              <span className="material-symbols-outlined" aria-hidden="true">search</span>
-              <span className="sr-only">내 식물 검색</span>
-              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="이름, 종류, 위치 검색" />
-            </label>
+            <div className="plant-section-tools">
+              <div className="plant-selection-tools">
+                <label className="selection-checkbox">
+                  <input type="checkbox" checked={allPlantsSelected} onChange={toggleAllPlants} />
+                  <span>{allPlantsSelected ? "전체 해제" : "전체 선택"}</span>
+                </label>
+                <button className="button button-danger-ghost button-small" type="button" disabled={selectedPlantIds.size === 0 || deletingPlants} onClick={handleDeleteSelectedPlants}>
+                  {deletingPlants ? "삭제 중…" : `선택 삭제${selectedPlantIds.size > 0 ? ` (${selectedPlantIds.size})` : ""}`}
+                  <svg aria-hidden="true" fill="none" height="18" viewBox="0 0 24 24" width="18">
+                    <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                  </svg>
+                </button>
+              </div>
+              <label className="search-field">
+                <span className="material-symbols-outlined" aria-hidden="true">search</span>
+                <span className="sr-only">내 식물 검색</span>
+                <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="이름, 종류, 위치 검색" />
+              </label>
+            </div>
           </div>
+          {deleteError && <div className="alert alert-error" role="alert">{deleteError}</div>}
           <div className="plant-grid">
             {filteredPlants.map((plant, index) => {
               const imageUrl = plant.imageUrl || defaultPlantImages[index % defaultPlantImages.length];
               const reminder = reminders.find((item) => item.plantId === plant.id);
               return (
-                <article className="plant-card" key={plant.id}>
+                <article className={selectedPlantIds.has(plant.id) ? "plant-card is-selected" : "plant-card"} key={plant.id}>
+                  <label className="plant-card-selector" onClick={(event) => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedPlantIds.has(plant.id)}
+                      onChange={() => togglePlantSelection(plant.id)}
+                    />
+                    <span className="material-symbols-outlined" aria-hidden="true">check</span>
+                    <span className="sr-only">{plant.name} 선택</span>
+                  </label>
                   <button className="plant-card-main" type="button" onClick={() => selectPlant(plant.id, "detail")}>
                     <span className="plant-card-image">
                       <img alt={`${plant.name} 식물`} loading="lazy" src={imageUrl} onError={(event) => { event.currentTarget.src = dashboardPlantImage; }} />
@@ -179,7 +248,8 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
                     </span>
                     <span className="plant-card-copy">
                       <strong>{plant.name}</strong>
-                      <span>{plant.species || "종류를 알려주세요"}</span>
+                      <span>{plant.displaySpecies || plant.species || "종류를 알려주세요"}</span>
+                      {plant.displaySpecies && plant.species && plant.displaySpecies !== plant.species && <em className="plant-scientific-name">{plant.species}</em>}
                       <small><span className="material-symbols-outlined" aria-hidden="true">location_on</span>{plant.location || "위치 미등록"}</small>
                     </span>
                   </button>

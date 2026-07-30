@@ -552,8 +552,10 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
           {!loadingConversation && conversation.map((item) => item.role === "user" ? (
             <article className="message message-user" key={item.id} ref={item.id === activeQuestionId ? activeQuestionRef : undefined}>
               <span className="message-label">나</span>
-              {item.imageUrl && <img className="message-photo" src={item.imageUrl} alt="함께 보낸 관찰 사진" />}
-              <p>{item.text}</p>
+              <div className="message-user-content">
+                {item.imageUrl && <img className="message-photo" src={item.imageUrl} alt="함께 보낸 관찰 사진" />}
+                <p>{item.text}</p>
+              </div>
             </article>
           ) : (
             <article className={item.id === revealingMessageId ? "message message-assistant is-revealing" : "message message-assistant"} key={item.id} ref={item.id === revealingMessageId ? latestAnswerRef : undefined}>
