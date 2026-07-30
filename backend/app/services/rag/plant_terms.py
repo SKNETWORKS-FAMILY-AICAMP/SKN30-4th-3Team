@@ -141,13 +141,20 @@ def _load_pesticide_crop_names() -> Set[str]:
 def _load_from_catalog() -> tuple[Set[str], Dict[str, str], List[str], list]:
     from app.db import session
 
-    try:
-        response = session.supabase.table("plant_catalog").select(
-            "name,species,watering_interval_days"
-        ).execute()
-    except Exception:
-        # watering_interval_days 컬럼 미적용(마이그레이션 전) 환경
-        response = session.supabase.table("plant_catalog").select("name,species").execute()
+    # aliases/watering_interval_days 컬럼 미적용(마이그레이션 전) 환경까지 단계적 폴백
+    response = None
+    for columns in (
+        "name,species,watering_interval_days,aliases",
+        "name,species,watering_interval_days",
+        "name,species",
+    ):
+        try:
+            response = session.supabase.table("plant_catalog").select(columns).execute()
+            break
+        except Exception:
+            response = None
+    if response is None:
+        raise RuntimeError("plant_catalog select 실패")
 
     terms: Set[str] = set()
     variant_map: Dict[str, List[str]] = {}
@@ -172,6 +179,14 @@ def _load_from_catalog() -> tuple[Set[str], Dict[str, str], List[str], list]:
         first_token = name.split()[0]
         if len(first_token) >= 2:
             _register_variants(first_token, terms, variant_map)
+        # 이명(별칭)을 용어로 등록하고, 표준국명 첫 토큰을 가리키는 별칭 후보로 넣는다
+        # (예: 방울토마토→토마토, 길경→도라지). 여러 작물이 같은 이명을 가리키면
+        # 아래 종소명과 동일한 모호성 필터(alias_candidates)로 자동 제외된다.
+        for alias_name in (row.get("aliases") or []):
+            alias_name = str(alias_name).strip()
+            if len(alias_name) >= MIN_SUBSTRING_TERM_LENGTH:
+                terms.add(alias_name)
+                alias_candidates.setdefault(alias_name.lower(), set()).add(first_token)
         # 학명의 종소명만 국문명으로 매핑한다 (예: "Monstera deliciosa" → 몬스테라).
         # - 첫 토큰(속명)은 제외: 속은 근연종이 정의상 공유한다.
         #   Prunus는 벚나무·매실·살구·자두·복숭아가, Solanum은 감자·토마토·가지가 공유.

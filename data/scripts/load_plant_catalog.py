@@ -46,12 +46,14 @@ def description_for(row: dict[str, Any]) -> str:
 
 
 def payload(row: dict[str, Any]) -> dict[str, Any]:
+    aliases = [str(alias).strip() for alias in (row.get("aliases") or []) if str(alias).strip()]
     return {
         "id": row["plant_id"],
         "name": row["name_ko"],
         "species": row.get("name_scientific") or row.get("name_en") or row["name_ko"],
         "family_name": row.get("family") or None,
         "description": description_for(row) or None,
+        "aliases": aliases,
     }
 
 
