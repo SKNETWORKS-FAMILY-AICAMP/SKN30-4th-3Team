@@ -45,6 +45,7 @@ export function AppShell({ children, currentPage, onNavigate, onNavigateToDashbo
         <nav className="desktop-nav" aria-label="주요 메뉴">
           <button className={currentPage === "dashboard" ? "nav-button is-active" : "nav-button"} type="button" onClick={() => onNavigate("dashboard")} aria-current={currentPage === "dashboard" ? "page" : undefined}>홈</button>
           <button className="nav-button" type="button" onClick={() => onNavigateToDashboardSection("checklist-section")}>체크리스트</button>
+          <button className={currentPage === "garden" ? "nav-button is-active" : "nav-button"} type="button" onClick={() => onNavigate("garden")} aria-current={currentPage === "garden" ? "page" : undefined}>내 텃밭</button>
           <button className={currentPage === "chat" ? "nav-button is-active" : "nav-button"} type="button" onClick={() => onNavigate("chat")} aria-current={currentPage === "chat" ? "page" : undefined}>AI 상담</button>
         </nav>
 
@@ -76,6 +77,7 @@ export function AppShell({ children, currentPage, onNavigate, onNavigateToDashbo
       <nav className="mobile-nav" aria-label="모바일 주요 메뉴">
         <button className={currentPage === "dashboard" ? "mobile-nav-button is-active" : "mobile-nav-button"} type="button" onClick={() => onNavigate("dashboard")} aria-current={currentPage === "dashboard" ? "page" : undefined}><span className="material-symbols-outlined" aria-hidden="true">home</span>홈</button>
         <button className="mobile-nav-button" type="button" onClick={() => onNavigateToDashboardSection("checklist-section")}><span className="material-symbols-outlined" aria-hidden="true">checklist</span>체크리스트</button>
+        <button className={currentPage === "garden" ? "mobile-nav-button is-active" : "mobile-nav-button"} type="button" onClick={() => onNavigate("garden")} aria-current={currentPage === "garden" ? "page" : undefined}><span className="material-symbols-outlined" aria-hidden="true">potted_plant</span>텃밭</button>
         <button className={currentPage === "add" ? "mobile-nav-button is-active" : "mobile-nav-button"} type="button" onClick={() => onNavigate("add")} aria-current={currentPage === "add" ? "page" : undefined}><span className="material-symbols-outlined" aria-hidden="true">add_circle</span>식물 등록</button>
         <button className={currentPage === "chat" ? "mobile-nav-button is-active" : "mobile-nav-button"} type="button" onClick={() => onNavigate("chat")} aria-current={currentPage === "chat" ? "page" : undefined}><span className="material-symbols-outlined" aria-hidden="true">temp_preferences_eco</span>AI 상담</button>
       </nav>

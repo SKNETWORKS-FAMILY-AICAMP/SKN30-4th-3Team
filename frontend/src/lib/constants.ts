@@ -1,15 +1,17 @@
 // 페이지 라우팅 상수 및 로컬스토리지 키
-export type DesignPage = "login" | "dashboard" | "add" | "detail" | "chat";
+export type DesignPage = "login" | "dashboard" | "add" | "detail" | "chat" | "garden";
 
 const hashToPage: Record<string, DesignPage> = {
   "#login": "login",
   "#dashboard": "dashboard",
   "#add": "add",
   "#detail": "detail",
-  "#chat": "chat"
+  "#chat": "chat",
+  "#garden": "garden"
 };
 
 export const SELECTED_PLANT_ID_KEY = "farmhani_selected_plant_id";
+export const SELECTED_GARDEN_ID_KEY = "farmhani_selected_garden_id";
 export const LAST_SESSION_ID_KEY = "farmhani_last_session_id";
 export const PENDING_DIAGNOSIS_QUESTION_KEY = "farmhani_pending_diagnosis_question";
 export const CHAT_RESPONSE_MODE_KEY = "farmhani_chat_response_mode";

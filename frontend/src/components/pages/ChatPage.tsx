@@ -17,6 +17,8 @@ import type {
   ChatProgressEvent,
   ChatResponseMode,
   ChatSession,
+  PestDiagnosis,
+  PesticideGuidance,
   Plant,
   PlantCareChatResponse
 } from "../../types";
@@ -564,6 +566,8 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
                   <AnswerList icon="visibility" title="추가 관찰" items={item.response.observationChecklist} emptyText="추가 사진이나 관리 기록을 남겨주세요." />
                 </>
               )}
+              {item.response.pestDiagnosis && item.response.pestDiagnosis.length > 0 && <PestDiagnosisList items={item.response.pestDiagnosis} />}
+              {item.response.pesticideGuidance && item.response.pesticideGuidance.length > 0 && <PesticideGuidanceList items={item.response.pesticideGuidance} />}
               <CitationList citations={item.response.citations} />
               {item.response.safetyNotice && <div className="safety-notice">{item.response.safetyNotice}</div>}
               {item.response.messageId && !item.saved && (
@@ -654,6 +658,64 @@ function AnswerList({ icon, title, items, emptyText }: AnswerListProps) {
     <section className="answer-section">
       <h3><span className="material-symbols-outlined" aria-hidden="true">{icon}</span>{title}</h3>
       {uniqueItems.length > 0 ? <ul>{uniqueItems.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="muted-copy">{emptyText}</p>}
+    </section>
+  );
+}
+
+function PestDiagnosisList({ items }: { items: PestDiagnosis[] }) {
+  return (
+    <section className="answer-section pest-section">
+      <h3><span className="material-symbols-outlined" aria-hidden="true">search_insights</span>병해충 가능성</h3>
+      <ul className="pest-list">
+        {items.map((item) => {
+          const pct = Math.round(Math.min(1, Math.max(0, item.confidence)) * 100);
+          const kindLabel = item.kind === "pest" ? "해충" : item.kind === "disease" ? "병" : "관찰";
+          return (
+            <li className="pest-item" key={`${item.candidate}-${pct}`}>
+              <div className="pest-item-head">
+                <span className={`pest-badge pest-badge-${item.kind || "unknown"}`}>{kindLabel}</span>
+                <strong>{item.candidate}</strong>
+                <span className="pest-confidence">{pct}%</span>
+              </div>
+              <div className="pest-meter" aria-hidden="true"><span style={{ width: `${pct}%` }} /></div>
+              {item.rationale && <p>{item.rationale}</p>}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="muted-copy pest-note">확정 진단이 아닌 가능성입니다. 잎 뒷면·병반을 추가로 관찰해 주세요.</p>
+    </section>
+  );
+}
+
+function PesticideGuidanceList({ items }: { items: PesticideGuidance[] }) {
+  return (
+    <section className="answer-section pesticide-section">
+      <h3><span className="material-symbols-outlined" aria-hidden="true">verified</span>농약 안전사용 안내</h3>
+      <ul className="pesticide-list">
+        {items.map((item) => (
+          <li className="pesticide-item" key={item.name}>
+            <div className="pesticide-head">
+              <strong>{item.name}</strong>
+              {item.regNo && <span className="pesticide-regno">등록 {item.regNo}</span>}
+            </div>
+            {Boolean(item.targetCrops?.length || item.targetPests?.length) && (
+              <p className="pesticide-target">
+                {item.targetCrops?.length ? `적용작물: ${item.targetCrops.join(", ")}` : ""}
+                {item.targetCrops?.length && item.targetPests?.length ? " · " : ""}
+                {item.targetPests?.length ? `대상: ${item.targetPests.join(", ")}` : ""}
+              </p>
+            )}
+            <dl className="pesticide-facts">
+              {typeof item.phiDays === "number" && <div className="is-phi"><dt>수확 전 사용</dt><dd>{item.phiDays}일 전까지</dd></div>}
+              {item.dilution && <div><dt>희석배수</dt><dd>{item.dilution}</dd></div>}
+              {typeof item.maxApplications === "number" && <div><dt>최대 사용</dt><dd>{item.maxApplications}회</dd></div>}
+            </dl>
+            {item.safetyNote && <p className="pesticide-safety">{item.safetyNote}</p>}
+          </li>
+        ))}
+      </ul>
+      <p className="muted-copy pesticide-note">공식 안전사용기준(농약안전정보시스템 등) 기반 안내입니다. 실제 사용 전 제품 표시사항의 적용대상·사용시기를 반드시 확인하세요.</p>
     </section>
   );
 }

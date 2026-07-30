@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getPlants, getTodayChecklist, getWateringReminders } from "../../api";
+import { createCareLog, getPlants, getTodayChecklist, getWateringReminders } from "../../api";
 import { PageState } from "../PageState";
 import { defaultPlantImages, type DesignPage } from "../../lib/constants";
 import { setSelectedPlantId } from "../../lib/storage";
@@ -11,6 +11,16 @@ interface DashboardPageProps {
   onAuthError: (error: unknown) => boolean;
 }
 
+// 물주기 D-day 라벨 — 다음 물주기까지 남은 일수(음수면 지남)
+function wateringDdayLabel(reminder?: WateringReminder): string | null {
+  if (!reminder) return null;
+  if (reminder.status === "unknown" || reminder.daysSinceWatered === null || reminder.daysSinceWatered === undefined) return "물주기 기록 없음";
+  const remaining = reminder.intervalDays - reminder.daysSinceWatered;
+  if (remaining > 0) return `다음 물주기 D-${remaining}`;
+  if (remaining === 0) return "오늘 물주기";
+  return `물주기 ${-remaining}일 지남`;
+}
+
 export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [checklist, setChecklist] = useState<ChecklistTask[]>([]);
@@ -20,6 +30,7 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const [query, setQuery] = useState("");
   const [checklistExpanded, setChecklistExpanded] = useState(true);
+  const [wateringId, setWateringId] = useState<string>();
 
   useEffect(() => {
     let active = true;
@@ -49,6 +60,24 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
   function selectPlant(plantId: string, page: "detail" | "chat") {
     setSelectedPlantId(plantId);
     onNavigate(page);
+  }
+
+  async function handleWater(plantId: string) {
+    if (wateringId) return;
+    setWateringId(plantId);
+    setError("");
+    try {
+      await createCareLog(plantId, { wateredAt: new Date().toISOString().slice(0, 10) });
+      const [taskRows, reminderRows] = await Promise.all([getTodayChecklist(), getWateringReminders()]);
+      setChecklist(taskRows);
+      setReminders(reminderRows);
+    } catch (caughtError) {
+      if (!onAuthError(caughtError)) {
+        setError(caughtError instanceof Error ? caughtError.message : "물주기 기록을 저장하지 못했습니다.");
+      }
+    } finally {
+      setWateringId(undefined);
+    }
   }
 
   function showChecklist() {
@@ -145,7 +174,7 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
                     <span className="plant-card-image">
                       <img alt={`${plant.name} 식물`} loading="lazy" src={imageUrl} onError={(event) => { event.currentTarget.src = dashboardPlantImage; }} />
                       <span className={`status-chip status-${reminder?.status || "unknown"}`}>
-                        {reminder?.status === "due" ? "확인 필요" : reminder?.status === "upcoming" ? "곧 물주기" : "잘 지내는 중"}
+                        {reminder?.status === "due" ? "확인 필요" : reminder?.status === "upcoming" ? "곧 물주기" : reminder?.status === "unknown" || !reminder ? "기록 없음" : "잘 지내는 중"}
                       </span>
                     </span>
                     <span className="plant-card-copy">
@@ -193,13 +222,24 @@ export function DashboardPage({ onNavigate, onAuthError }: DashboardPageProps) {
           </div>
           <div id="today-checklist-content" hidden={!checklistExpanded}>
             {openTasks.length > 0 ? <ul className="task-list">
-              {openTasks.map((task) => (
-                <li key={task.id}>
-                  <span className="task-marker" aria-hidden="true"><span className="material-symbols-outlined">check</span></span>
-                  <span><strong>{task.plantName}</strong>{task.title}<small>{task.description}</small></span>
-                  <button className="text-button" type="button" onClick={() => selectPlant(task.plantId, "detail")}>기록 열기</button>
-                </li>
-              ))}
+              {openTasks.map((task) => {
+                const reminder = reminders.find((item) => item.plantId === task.plantId);
+                const dday = task.taskType === "water" ? wateringDdayLabel(reminder) : null;
+                return (
+                  <li key={task.id}>
+                    <span className={`task-marker task-marker-${task.taskType}`} aria-hidden="true"><span className="material-symbols-outlined">{task.taskType === "water" ? "water_drop" : task.taskType === "photo" ? "photo_camera" : "check"}</span></span>
+                    <span className="task-copy"><strong>{task.plantName}</strong>{task.title}<small>{task.description}</small>{dday && <span className={reminder?.status === "due" ? "task-dday is-due" : "task-dday"}>{dday}</span>}</span>
+                    <div className="task-actions">
+                      {task.taskType === "water" && (
+                        <button className="button button-primary button-small" type="button" disabled={wateringId === task.plantId} onClick={() => handleWater(task.plantId)}>
+                          <span className="material-symbols-outlined" aria-hidden="true">water_drop</span>{wateringId === task.plantId ? "기록 중…" : "물 줬어요"}
+                        </button>
+                      )}
+                      <button className="text-button" type="button" onClick={() => selectPlant(task.plantId, "detail")}>기록 열기</button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul> : <div className="checklist-empty"><span className="material-symbols-outlined" aria-hidden="true">task_alt</span><div><strong>오늘의 체크리스트를 모두 확인했어요</strong><p>새로운 관리 항목이 생기면 여기에 표시됩니다.</p></div></div>}
           </div>
           {!checklistExpanded && <p className="checklist-collapsed-note">{openTasks.length > 0 ? `아직 확인할 관리 항목이 ${openTasks.length}건 있어요.` : "오늘의 관리 항목을 모두 확인했어요."}</p>}

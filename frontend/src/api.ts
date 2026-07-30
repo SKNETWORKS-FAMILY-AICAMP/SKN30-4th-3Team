@@ -1,4 +1,4 @@
-import { mockChatResponse, mockPlants } from "./mockData";
+import { mockChatResponse, mockGardens, mockPlants } from "./mockData";
 import type {
   CareLog,
   ChatFeedbackItem,
@@ -10,6 +10,7 @@ import type {
   ChatResponseMode,
   ChatSession,
   ChecklistTask,
+  Garden,
   Plant,
   PlantCareChatResponse,
   PlantCatalogItem,
@@ -33,6 +34,7 @@ const REFRESH_TOKEN_KEY = "farmhani_refresh_token";
 const LOCAL_PLANTS_KEY = "farmhani_local_plants";
 const LOCAL_CARE_LOGS_KEY = "farmhani_local_care_logs";
 const LOCAL_PLANT_PHOTOS_KEY = "farmhani_local_plant_photos";
+const LOCAL_GARDENS_KEY = "farmhani_local_gardens";
 const MAX_PHOTO_UPLOAD_BYTES = 8 * 1024 * 1024;
 let refreshSessionPromise: Promise<string | undefined> | undefined;
 
@@ -298,6 +300,20 @@ function saveLocalPlants(plants: Plant[]) {
   localStorage.setItem(LOCAL_PLANTS_KEY, JSON.stringify(plants));
 }
 
+function loadLocalGardens(): Garden[] {
+  const stored = localStorage.getItem(LOCAL_GARDENS_KEY);
+  if (!stored) return mockGardens;
+  try {
+    return JSON.parse(stored) as Garden[];
+  } catch {
+    return mockGardens;
+  }
+}
+
+function saveLocalGardens(gardens: Garden[]) {
+  localStorage.setItem(LOCAL_GARDENS_KEY, JSON.stringify(gardens));
+}
+
 function loadLocalCareLogs(): CareLog[] {
   try {
     return JSON.parse(localStorage.getItem(LOCAL_CARE_LOGS_KEY) || "[]") as CareLog[];
@@ -338,6 +354,60 @@ export async function getPlants(): Promise<Plant[]> {
   return request<Plant[]>("/api/v1/plants");
 }
 
+// 텃밭(구획) 목록 — 도메인 확장(백엔드 미구현, mock/계약 우선)
+export async function listGardens(): Promise<Garden[]> {
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    return loadLocalGardens();
+  }
+  return request<Garden[]>("/api/v1/gardens");
+}
+
+export async function createGarden(
+  input: Pick<Garden, "name"> & Partial<Pick<Garden, "location" | "description" | "sunlight" | "soilType">>
+): Promise<Garden> {
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    const garden: Garden = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      ...input
+    };
+    saveLocalGardens([garden, ...loadLocalGardens()]);
+    return garden;
+  }
+  return request<Garden>("/api/v1/gardens", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateGarden(
+  gardenId: string,
+  input: Partial<Pick<Garden, "name" | "location" | "description" | "sunlight" | "soilType">>
+): Promise<Garden> {
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    const gardens = loadLocalGardens();
+    const nextGardens = gardens.map((garden) => (garden.id === gardenId ? { ...garden, ...input } : garden));
+    saveLocalGardens(nextGardens);
+    const updated = nextGardens.find((garden) => garden.id === gardenId);
+    if (!updated) throw new Error("수정할 텃밭을 찾지 못했습니다.");
+    return updated;
+  }
+  return request<Garden>(`/api/v1/gardens/${gardenId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteGarden(gardenId: string): Promise<void> {
+  if (ENABLE_DEVELOPMENT_MOCKS) {
+    saveLocalGardens(loadLocalGardens().filter((garden) => garden.id !== gardenId));
+    // 담긴 작물은 삭제하지 않고 텃밭 배정만 해제한다
+    saveLocalPlants(loadLocalPlants().map((plant) => (plant.gardenId === gardenId ? { ...plant, gardenId: null } : plant)));
+    return;
+  }
+  await request<void>(`/api/v1/gardens/${gardenId}`, { method: "DELETE" });
+}
+
 export async function getPlant(plantId: string) {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const plant = loadLocalPlants().find((item) => item.id === plantId);
@@ -353,7 +423,7 @@ export async function getPlant(plantId: string) {
 
 export async function updatePlant(
   plantId: string,
-  input: Partial<Pick<Plant, "name" | "species" | "location" | "sunlight" | "imageUrl">>
+  input: Partial<Pick<Plant, "name" | "species" | "location" | "sunlight" | "imageUrl" | "gardenId">>
 ): Promise<Plant> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const plants = loadLocalPlants();
@@ -383,7 +453,7 @@ export async function deletePlant(plantId: string): Promise<void> {
   });
 }
 
-export async function createPlant(input: Pick<Plant, "name" | "species" | "location" | "sunlight">): Promise<Plant> {
+export async function createPlant(input: Pick<Plant, "name" | "species" | "location" | "sunlight"> & Partial<Pick<Plant, "gardenId">>): Promise<Plant> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
     const plant: Plant = {
       id: crypto.randomUUID(),
@@ -684,32 +754,84 @@ export async function askPlantCareStream(
   throw new Error("상담 응답 스트림이 완료되지 않았습니다.");
 }
 
+// mock 물주기 주기(일) — 백엔드 watering_interval_days의 경량 재현(도감 대신 키워드 규칙)
+function mockWateringIntervalDays(plant: Plant): number {
+  const hay = `${plant.name || ""} ${plant.species || ""}`.toLowerCase();
+  if (/선인장|다육|스투키|산세|금전수|cactus|succulent|sansevieria|zamioculcas|aloe/.test(hay)) return 14;
+  if (/바질|민트|상추|깻잎|시금치|부추|토마토|오이|고추|파프리카|딸기|가지|허브|basil|mint|lettuce|tomato|cucumber|strawberry/.test(hay)) return 3;
+  return 7;
+}
+
+// mock: 최근 care_logs.watered_at에서 물주기 상태를 파생한다 ("물 줬어요" 완료 루프의 근거)
+function computeMockReminder(plant: Plant, logs: CareLog[]): WateringReminder {
+  const lastWateredAt = logs
+    .filter((log) => log.plantId === plant.id && log.wateredAt)
+    .map((log) => log.wateredAt as string)
+    .sort()
+    .pop() || null;
+  const intervalDays = mockWateringIntervalDays(plant);
+  if (!lastWateredAt) {
+    return { plantId: plant.id, name: plant.name, species: plant.species, lastWateredAt: null, daysSinceWatered: null, intervalDays, status: "unknown" };
+  }
+  const daysSinceWatered = Math.max(0, Math.floor((Date.now() - new Date(lastWateredAt).getTime()) / 86400000));
+  const remaining = intervalDays - daysSinceWatered;
+  const status: WateringReminder["status"] = remaining <= 0 ? "due" : remaining <= 1 ? "upcoming" : "ok";
+  return { plantId: plant.id, name: plant.name, species: plant.species, lastWateredAt, daysSinceWatered, intervalDays, status };
+}
+
 export async function getWateringReminders(): Promise<WateringReminder[]> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
-    return loadLocalPlants().map((plant, index) => ({
-      plantId: plant.id,
-      name: plant.name,
-      species: plant.species,
-      lastWateredAt: index === 1 ? "2026-07-18" : "2026-07-21",
-      daysSinceWatered: index === 1 ? 5 : 2,
-      intervalDays: index === 1 ? 4 : 7,
-      status: index === 1 ? "due" : index === 2 ? "upcoming" : "ok"
-    }));
+    const logs = loadLocalCareLogs();
+    return loadLocalPlants().map((plant) => computeMockReminder(plant, logs));
   }
   return request<WateringReminder[]>("/api/v1/plants/reminders");
 }
 
 export async function getTodayChecklist(): Promise<ChecklistTask[]> {
   if (ENABLE_DEVELOPMENT_MOCKS) {
-    return loadLocalPlants().slice(0, 2).map((plant, index) => ({
-      id: `mock-task-${plant.id}`,
-      plantId: plant.id,
-      plantName: plant.name,
-      taskType: index === 0 ? "observe" : "water",
-      title: index === 0 ? "새 잎과 흙 상태 확인" : "물주기 전 흙 수분 확인",
-      description: index === 0 ? "지난 사진과 비교해 잎의 변화를 기록해 보세요." : "겉흙만 보고 판단하지 말고 2~3cm 아래를 확인해요.",
-      done: false
-    }));
+    const logs = loadLocalCareLogs();
+    const plants = loadLocalPlants();
+    const tasks: ChecklistTask[] = [];
+    for (const plant of plants) {
+      const reminder = computeMockReminder(plant, logs);
+      if (reminder.status === "due") {
+        const over = (reminder.daysSinceWatered ?? 0) - reminder.intervalDays;
+        tasks.push({
+          id: `water-${plant.id}`,
+          plantId: plant.id,
+          plantName: plant.name,
+          taskType: "water",
+          title: "물주기 확인",
+          description: over > 0
+            ? `권장 주기(${reminder.intervalDays}일)를 ${over}일 지났어요. 겉흙 2~3cm 아래를 확인하고 필요하면 물을 주세요.`
+            : "오늘이 물주기 예정일이에요. 겉흙 2~3cm 아래를 확인하고 필요하면 물을 주세요.",
+          done: false
+        });
+      } else if (reminder.status === "unknown") {
+        tasks.push({
+          id: `water-${plant.id}`,
+          plantId: plant.id,
+          plantName: plant.name,
+          taskType: "water",
+          title: "첫 물주기 기록하기",
+          description: "아직 물주기 기록이 없어요. 오늘 흙 상태를 확인하고 물을 줬다면 기록해 주세요.",
+          done: false
+        });
+      }
+    }
+    // 물주기 할 일이 없으면 관찰 유도 1건
+    if (tasks.length === 0 && plants[0]) {
+      tasks.push({
+        id: `observe-${plants[0].id}`,
+        plantId: plants[0].id,
+        plantName: plants[0].name,
+        taskType: "observe",
+        title: "새 잎과 흙 상태 확인",
+        description: "지난 사진과 비교해 잎 색·흙 상태의 변화를 기록해 보세요.",
+        done: false
+      });
+    }
+    return tasks;
   }
   return request<ChecklistTask[]>("/api/v1/plants/checklist");
 }

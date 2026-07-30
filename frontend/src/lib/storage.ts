@@ -5,6 +5,7 @@ import {
   CHAT_RESPONSE_MODE_KEY,
   LAST_SESSION_ID_KEY,
   NOTIFICATION_ENABLED_KEY,
+  SELECTED_GARDEN_ID_KEY,
   SELECTED_PLANT_ID_KEY,
   USER_PROFILE_PHOTO_KEY,
   WATERING_NOTIFIED_DATE_KEY
@@ -16,6 +17,14 @@ export function setSelectedPlantId(plantId: string) {
 
 export function getSelectedPlantId() {
   return localStorage.getItem(SELECTED_PLANT_ID_KEY);
+}
+
+export function setSelectedGardenId(gardenId: string) {
+  localStorage.setItem(SELECTED_GARDEN_ID_KEY, gardenId);
+}
+
+export function getSelectedGardenId() {
+  return localStorage.getItem(SELECTED_GARDEN_ID_KEY);
 }
 
 export function setLastSessionId(sessionId?: string) {
