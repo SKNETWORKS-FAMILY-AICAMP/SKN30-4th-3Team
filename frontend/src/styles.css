@@ -359,7 +359,7 @@ p { line-height: 1.7; }
 .detail-facts > div > .material-symbols-outlined { display: grid; width: 37px; height: 37px; place-items: center; border-radius: 11px; color: var(--green-700); background: var(--mint-100); }
 .detail-facts dt { color: var(--muted); font-size: .66rem; }
 .detail-facts dd { margin: 3px 0 0; color: var(--ink); font-size: .8rem; font-weight: 760; }
-.edit-panel { margin-top: 20px; border-color: var(--mint-300); }
+.edit-panel { margin-top: 20px; border-color: var(--mint-300); scroll-margin-top: 94px; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 20px; }
 .detail-grid .content-section { min-height: 420px; }
 .timeline { position: relative; padding: 0 0 0 26px; margin: 0; list-style: none; }

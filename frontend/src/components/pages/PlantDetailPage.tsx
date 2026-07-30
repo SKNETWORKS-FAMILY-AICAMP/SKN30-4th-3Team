@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { createCareLog, deletePlant, getPlant, storagePathToPublicUrl, updatePlant, uploadPlantPhoto } from "../../api";
 import dashboardPlantImage from "../../assets/dashboard-plant.webp";
 import type { DesignPage } from "../../lib/constants";
@@ -29,6 +29,21 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
   const [editSunlight, setEditSunlight] = useState("");
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const editPanelRef = useRef<HTMLElement>(null);
+
+  function scrollToEditPanel() {
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    editPanelRef.current?.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+      block: "start"
+    });
+  }
+
+  useEffect(() => {
+    if (!editing) return;
+    const frameId = window.requestAnimationFrame(scrollToEditPanel);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [editing]);
 
   useEffect(() => {
     if (!plantId) {
@@ -94,6 +109,10 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
 
   function startEditing() {
     if (!plant) return;
+    if (editing) {
+      scrollToEditPanel();
+      return;
+    }
     setEditName(plant.name);
     setEditSpecies(plant.species || "");
     setEditLocation(plant.location || "");
@@ -193,7 +212,7 @@ export function PlantDetailPage({ onNavigate, onAuthError }: PlantDetailPageProp
       </section>
 
       {editing && (
-        <section className="edit-panel" aria-labelledby="edit-plant-title">
+        <section ref={editPanelRef} className="edit-panel" aria-labelledby="edit-plant-title">
           <div className="section-heading"><div><span className="eyebrow">EDIT PROFILE</span><h2 id="edit-plant-title">식물 정보 수정</h2></div><button className="icon-button" type="button" onClick={() => setEditing(false)} aria-label="수정 닫기"><span className="material-symbols-outlined" aria-hidden="true">close</span></button></div>
           <form className="stack-form" onSubmit={handleEditSubmit}>
             <div className="form-grid"><label className="field"><span>식물 이름</span><input required maxLength={60} value={editName} onChange={(event) => setEditName(event.target.value)} /></label><label className="field"><span>식물 종류</span><input maxLength={100} value={editSpecies} onChange={(event) => setEditSpecies(event.target.value)} /></label></div>
