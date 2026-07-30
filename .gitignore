@@ -51,6 +51,12 @@ data/raw/*
 !data/raw/total_disease_187plants.jsonl
 !data/raw/total_growth_care_187plants.jsonl
 !data/raw/total_pest_187plants.jsonl
+!data/raw/plantsolve_growth_care.jsonl
+!data/raw/korean_plantsolve_growth_care.jsonl
+!data/raw/perenual_growth_care.jsonl
+!data/raw/eppo_datasheets.jsonl
+!data/raw/eppo_global_database.jsonl
+!data/raw/perenual_pest_disease.jsonl
 data/external/*
 !data/external/.gitkeep
 !data/external/README.md
