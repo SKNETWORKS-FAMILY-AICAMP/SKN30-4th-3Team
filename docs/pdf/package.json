@@ -1,0 +1,14 @@
+{
+  "name": "farmhani-v2-docs-pdf",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Farm하니 v2 제출 문서 마크다운 → PDF 변환 도구",
+  "scripts": {
+    "build": "node build_pdf.mjs"
+  },
+  "dependencies": {
+    "markdown-it": "^14.0.0",
+    "puppeteer-core": "^23.0.0"
+  }
+}
