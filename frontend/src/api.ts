@@ -940,6 +940,8 @@ export async function getChatModelInfo(): Promise<ChatModelInfo> {
       localAuxiliaryEnabled: false,
       primaryCircuit: { state: "closed", failureCount: 0, retryAfterSeconds: 0 },
       primaryConfigured: true,
+      primaryAvailable: true,
+      localAvailable: true,
       availableOpenAIModels: ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
     };
   }

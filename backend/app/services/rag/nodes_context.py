@@ -8,6 +8,15 @@ from app.services.rag.vision import VisionAnalysisError, analyze_plant_image
 logger = logging.getLogger(__name__)
 
 
+def garden_member_label(member: dict) -> str:
+    """별명과 품종을 하나의 식물 항목으로 표현한다."""
+    name = str(member.get("name") or "").strip()
+    species = str(member.get("species") or "").strip()
+    if name and species and name.casefold() != species.casefold():
+        return f"{name} ({species})"
+    return name or species
+
+
 # 1. validate_input 노드
 def validate_input(state: AgentState) -> Dict[str, Any]:
     db = state["db_client"]
@@ -36,10 +45,7 @@ def validate_input(state: AgentState) -> Dict[str, Any]:
             logs = logs_response.data or []
 
         garden = garden_response.data[0]
-        member_labels = [
-            " / ".join(part for part in [item.get("name"), item.get("species")] if part)
-            for item in members
-        ]
+        member_labels = [garden_member_label(item) for item in members]
         photo_data = {}
         if state.get("photo_id"):
             photo_response = (
@@ -283,6 +289,7 @@ def summarize_user_context(state: AgentState) -> Dict[str, Any]:
     ]
 
     if plant.get("context_type") == "garden":
+        members = plant.get("member_plants") or []
         context_parts = [
             f"텃밭 이름: {plant.get('name') or '이름 없음'}",
             f"텃밭 위치: {plant.get('location') or '미등록'}",
@@ -290,12 +297,13 @@ def summarize_user_context(state: AgentState) -> Dict[str, Any]:
             f"토양: {plant.get('soil_type') or '미등록'}",
             f"설명: {plant.get('description') or '미등록'}",
             f"재배 유형: {'단일 작물' if plant.get('cultivation_type') == 'single' else '여러 작물'}",
-            f"대표 작물: {plant.get('representative_crop') or '미등록'}",
             "구성 식물: " + (", ".join(
-                " / ".join(part for part in [member.get("name"), member.get("species")] if part)
-                for member in plant.get("member_plants") or []
+                garden_member_label(member)
+                for member in members
             ) or "등록된 식물 없음"),
         ]
+        if not members:
+            context_parts.insert(-1, f"대표 작물: {plant.get('representative_crop') or '미등록'}")
 
     if plant.get("health_score") is not None:
         context_parts.append(f"앱 건강 점수: {plant.get('health_score')}")

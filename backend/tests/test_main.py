@@ -609,6 +609,8 @@ def test_chat_model_info_exposes_selectable_models():
     data = response.json()
     assert data["availableOpenAIModels"] == ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
     assert isinstance(data["primaryConfigured"], bool)
+    assert isinstance(data["primaryAvailable"], bool)
+    assert isinstance(data["localAvailable"], bool)
 
 def test_create_signed_upload_url():
     payload = {

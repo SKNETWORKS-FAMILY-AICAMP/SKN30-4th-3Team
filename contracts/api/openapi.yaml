@@ -715,7 +715,7 @@ components:
           description: 실제 답변 생성에 사용된 모델 ID
     ChatModelInfo:
       type: object
-      required: [chatModel, visionModel, fallbackEnabled, localAuxiliaryEnabled, primaryCircuit, primaryConfigured, availableOpenAIModels]
+      required: [chatModel, visionModel, fallbackEnabled, localAuxiliaryEnabled, primaryCircuit, primaryConfigured, primaryAvailable, localAvailable, availableOpenAIModels]
       properties:
         chatModel:
           type: string
@@ -752,6 +752,12 @@ components:
         primaryConfigured:
           type: boolean
           description: OpenAI API 키 설정 여부
+        primaryAvailable:
+          type: boolean
+          description: OpenAI가 설정되어 있고 회로 차단 상태가 아닌지 여부
+        localAvailable:
+          type: boolean
+          description: 로컬 모델 서버 연결 및 선택 모델 준비 여부
         availableOpenAIModels:
           type: array
           items:

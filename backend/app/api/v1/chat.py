@@ -55,7 +55,7 @@ def fallback_session_title(db: Client, plant_id: str | None, created_at: str, ga
 
 @router.get("/model-info", response_model=ChatModelInfo, summary="식물 상담 AI 모델 정보 조회")
 def get_chat_model_info():
-    runtime = get_llm_runtime_status()
+    runtime = get_llm_runtime_status(probe_local=True)
     return ChatModelInfo(
         chatModel=os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
         visionModel=os.getenv("VISION_MODEL") or settings.VISION_MODEL,
@@ -65,6 +65,8 @@ def get_chat_model_info():
         localAuxiliaryEnabled=runtime["localAuxiliaryEnabled"],
         primaryCircuit=runtime["primaryCircuit"],
         primaryConfigured=runtime["primaryConfigured"],
+        primaryAvailable=runtime["primaryAvailable"],
+        localAvailable=runtime["localAvailable"],
         availableOpenAIModels=list(SELECTABLE_OPENAI_CHAT_MODELS),
     )
 

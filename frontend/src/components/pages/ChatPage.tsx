@@ -161,6 +161,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const [mode, setMode] = useState<ChatResponseMode>("expert");
   const [modelSelection, setModelSelection] = useState<ChatModelSelection>(() => getStoredChatModelSelection() || "gpt-5.4");
   const [modelInfo, setModelInfo] = useState<ChatModelInfo>();
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string>();
@@ -185,18 +186,8 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
         if (!active) return;
         setModelInfo(info);
         setModelSelection((current) => {
-          const openAIAvailable = current !== "local" && info.primaryConfigured && info.availableOpenAIModels.includes(current);
-          const localAvailable = current === "local" && info.fallbackEnabled;
-          if (openAIAvailable || localAvailable) return current;
-
-          const configuredModel = info.availableOpenAIModels.includes(info.chatModel as Exclude<ChatModelSelection, "local">)
-            ? info.chatModel as Exclude<ChatModelSelection, "local">
-            : info.availableOpenAIModels[0] || "gpt-5.4";
-          const nextSelection: ChatModelSelection = info.primaryConfigured
-            ? configuredModel
-            : info.fallbackEnabled
-              ? "local"
-              : configuredModel;
+          if (current === "local" || info.availableOpenAIModels.includes(current)) return current;
+          const nextSelection: ChatModelSelection = info.availableOpenAIModels[0] || "gpt-5.4";
           setStoredChatModelSelection(nextSelection);
           return nextSelection;
         });
@@ -307,6 +298,15 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
     const frameId = window.requestAnimationFrame(() => deleteConfirmRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
     return () => window.cancelAnimationFrame(frameId);
   }, [pendingDeleteSession]);
+
+  useEffect(() => {
+    if (!mobileSettingsOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setMobileSettingsOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileSettingsOpen]);
 
   useEffect(() => {
     if (!activeQuestionId) return;
@@ -466,7 +466,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedQuestion = question.trim();
-    if (!trimmedQuestion || !consultationTargetId || submitting) return;
+    if (!trimmedQuestion || !consultationTargetId || !selectedModelAvailable || submitting) return;
 
     const sentPhoto = photo;
     let sentPhotoUrl: string | undefined;
@@ -535,7 +535,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (!question.trim() || !consultationTargetId || submitting) return;
+    if (!question.trim() || !consultationTargetId || !selectedModelAvailable || submitting) return;
     event.currentTarget.form?.requestSubmit();
   }
 
@@ -561,19 +561,19 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
   const selectedPlantImage = selectedPlant?.imageUrl && !defaultPlantImages.includes(selectedPlant.imageUrl)
     ? selectedPlant.imageUrl
     : dashboardPlantImage;
-  const selectedModelAvailable = !modelInfo
-    || (modelSelection === "local" ? modelInfo.fallbackEnabled : modelInfo.primaryConfigured);
+  const selectedModelAvailable = modelInfo
+    ? modelSelection === "local" ? modelInfo.localAvailable : modelInfo.primaryAvailable
+    : false;
+  const selectedModelChecking = !modelInfo;
   const selectedModelStatus = modelSelection === "local"
-    ? selectedModelAvailable ? "로컬 연결 설정됨" : "로컬 연결 설정 필요"
+    ? selectedModelChecking ? "로컬 연결 확인 중" : selectedModelAvailable ? "로컬 모델 사용 가능" : "로컬 모델 연결 안 됨"
     : !selectedModelAvailable
-      ? "OpenAI API 키 설정 필요"
-      : modelInfo?.primaryCircuit.state === "open"
-        ? "OpenAI 장애 감지 · 로컬 fallback 대기"
-        : "OpenAI 연결 설정됨";
+      ? selectedModelChecking ? "OpenAI 상태 확인 중" : modelInfo?.primaryConfigured ? "OpenAI 현재 사용 불가" : "OpenAI API 키 설정 필요"
+      : "OpenAI 모델 사용 가능";
 
   return (
     <div className="chat-page">
-      <aside className="chat-context" aria-labelledby="chat-context-title">
+      <aside className={mobileSettingsOpen ? "chat-context is-mobile-open" : "chat-context"} aria-labelledby="chat-context-title" id="chat-settings-panel">
         <span className="chat-context-kicker"><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>{isGardenConsultation ? " GARDEN CARE AI" : mode === "expert" ? " PLANT CARE AI" : ` ${selectedPlant?.name || "내 식물"}와 대화`}</span>
         <h1 id="chat-context-title">{isGardenConsultation ? <>텃밭 고민,<br />함께 살펴봐요</> : mode === "expert" ? <>식물 고민,<br />함께 살펴봐요</> : <>{selectedPlant?.name || "내 식물"}의<br />이야기를 들어봐요</>}</h1>
         <p>{isGardenConsultation ? "텃밭 환경과 소속 식물의 관리 기록을 함께 비교해 관리 방향을 안내해 드려요." : mode === "expert" ? "사진과 관리 기록을 바탕으로 가능한 원인과 다음 관찰 항목을 안내해 드려요." : "등록된 기록을 바탕으로 내 식물이 말하듯 쉽고 다정하게 설명해 드려요."}</p>
@@ -619,20 +619,20 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
             >
               <optgroup label="OpenAI">
                 {defaultOpenAIModels.map((model) => (
-                  <option key={model} value={model} disabled={Boolean(modelInfo && (!modelInfo.primaryConfigured || !modelInfo.availableOpenAIModels.includes(model)))}>
+                  <option key={model} value={model} disabled={Boolean(modelInfo && (!modelInfo.primaryAvailable || !modelInfo.availableOpenAIModels.includes(model)))}>
                     {openAIModelLabels[model]}
                   </option>
                 ))}
               </optgroup>
               <optgroup label="Local">
-                <option value="local" disabled={Boolean(modelInfo && !modelInfo.fallbackEnabled)}>
+                <option value="local" disabled={Boolean(modelInfo && !modelInfo.localAvailable)}>
                   {modelInfo?.localChatModel || "qwen3-vl:4b-instruct"}
                 </option>
               </optgroup>
             </select>
           </label>
           <div className="chat-model-status" aria-live="polite">
-            <span className={!selectedModelAvailable ? "is-unavailable" : modelSelection === "local" ? "is-local" : "is-openai"} aria-hidden="true" />
+            <span className={selectedModelChecking ? "is-checking" : selectedModelAvailable ? "is-available" : "is-unavailable"} aria-hidden="true" />
             <div><small>{selectedModelStatus}</small><strong>{selectedModelLabel(modelSelection, modelInfo)}</strong></div>
           </div>
         </div>
@@ -689,6 +689,13 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
         </section>
       </aside>
 
+      <button
+        className={mobileSettingsOpen ? "chat-settings-backdrop is-visible" : "chat-settings-backdrop"}
+        type="button"
+        aria-label="상담 설정 닫기"
+        onClick={() => setMobileSettingsOpen(false)}
+      />
+
       <section
         className={draggingPhoto ? "chat-workspace is-dragging" : "chat-workspace"}
         aria-labelledby="conversation-title"
@@ -707,7 +714,17 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
             <span className="eyebrow">{startingNewSession ? "새 상담" : `${isGardenConsultation ? selectedGarden?.name || "선택한 텃밭" : selectedPlant?.name || "선택한 식물"} 상담 중`}</span>
             <h2 id="conversation-title">{isGardenConsultation ? "텃밭에서 어떤 점이 궁금한가요?" : mode === "expert" ? "어떤 점이 궁금한가요?" : `${selectedPlant?.name || "내 식물"}에게 말을 걸어보세요`}</h2>
           </div>
-          <button className="button button-secondary button-small" type="button" onClick={() => onNavigate(isGardenConsultation ? "garden" : "detail")}><span className="material-symbols-outlined" aria-hidden="true">history</span>{isGardenConsultation ? "텃밭 정보" : "식물 기록"}</button>
+          <div className="chat-heading-actions">
+            <button
+              className={mobileSettingsOpen ? "button button-secondary button-small mobile-chat-settings-toggle is-open" : "button button-secondary button-small mobile-chat-settings-toggle"}
+              type="button"
+              aria-label={mobileSettingsOpen ? "상담 설정 접기" : "상담 설정 펼치기"}
+              aria-controls="chat-settings-panel"
+              aria-expanded={mobileSettingsOpen}
+              onClick={() => setMobileSettingsOpen((open) => !open)}
+            ><SettingsPanelIcon open={mobileSettingsOpen} /><span>{mobileSettingsOpen ? "설정 접기" : "상담 설정"}</span></button>
+            <button className="button button-secondary button-small chat-context-link" type="button" onClick={() => onNavigate(isGardenConsultation ? "garden" : "detail")}><InfoIcon /><span>{isGardenConsultation ? "텃밭 정보" : "식물 정보"}</span></button>
+          </div>
         </header>
 
         {error && <div className="alert alert-error" role="alert">{error}</div>}
@@ -787,7 +804,7 @@ export function ChatPage({ onNavigate, onAuthError }: ChatPageProps) {
           </label>
           <label className="sr-only" htmlFor="chat-question">식물 관찰 내용</label>
           <textarea aria-keyshortcuts="Enter" id="chat-question" onChange={(event) => setQuestion(event.target.value)} onKeyDown={handleQuestionKeyDown} onPaste={handlePhotoPaste} placeholder={isGardenConsultation ? "예: 같은 텃밭인데 토마토와 바질의 잎이 함께 처져 보여요." : "예: 3일 전부터 아래 잎이 노랗고, 일주일 전에 물을 줬어요."} rows={2} title="Enter로 전송 · Shift+Enter로 줄바꿈 · 사진은 끌어다 놓거나 붙여넣기(Ctrl+V)" value={question} />
-          <button className="send-button" disabled={!question.trim() || !consultationTargetId || submitting || loadingConversation} type="submit" aria-label="질문 보내기"><span className="material-symbols-outlined" aria-hidden="true">arrow_upward</span></button>
+          <button className="send-button" disabled={!question.trim() || !consultationTargetId || !selectedModelAvailable || submitting || loadingConversation} type="submit" aria-label="질문 보내기"><span className="material-symbols-outlined" aria-hidden="true">arrow_upward</span></button>
         </form>
       </section>
     </div>
@@ -813,6 +830,27 @@ function TrashIcon() {
       <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
       <path d="M6.5 7l.7 11.2A2 2 0 0 0 9.2 20h5.6a2 2 0 0 0 2-1.8L17.5 7" />
       <path d="M10 11v5M14 11v5" />
+    </svg>
+  );
+}
+
+function SettingsPanelIcon({ open }: { open: boolean }) {
+  return (
+    <svg className="chat-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
+      <path d={open ? "m15 10-3 3-3-3" : "m9 14 3-3 3 3"} />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg className="chat-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v6" />
+      <path d="M12 7h.01" />
     </svg>
   );
 }

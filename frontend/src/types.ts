@@ -168,6 +168,8 @@ export type ChatModelInfo = {
     retryAfterSeconds: number;
   };
   primaryConfigured: boolean;
+  primaryAvailable: boolean;
+  localAvailable: boolean;
   availableOpenAIModels: OpenAIChatModel[];
 };
 

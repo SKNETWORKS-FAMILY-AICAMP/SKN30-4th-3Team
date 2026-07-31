@@ -65,6 +65,8 @@ class ChatModelInfo(BaseModel):
     localAuxiliaryEnabled: bool = False
     primaryCircuit: dict = Field(default_factory=dict)
     primaryConfigured: bool = False
+    primaryAvailable: bool = False
+    localAvailable: bool = False
     availableOpenAIModels: List[str] = Field(default_factory=list)
 
 

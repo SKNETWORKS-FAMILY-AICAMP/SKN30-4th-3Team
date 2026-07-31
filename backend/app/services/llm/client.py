@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import base64
+import copy
 import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+LOCAL_STATUS_TIMEOUT_SECONDS = 3.0
+LOCAL_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 15.0
+LOCAL_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+LOCAL_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 ProviderName = Literal["openai", "local"]
 PreferredProvider = Literal["openai", "local"]
@@ -107,15 +115,44 @@ def reset_primary_circuit() -> None:
     _primary_circuit.reset()
 
 
-def get_llm_runtime_status() -> dict[str, Any]:
+def _local_model_available() -> bool:
+    if not _fallback_enabled():
+        return False
+
+    try:
+        import httpx
+
+        response = httpx.get(
+            settings.LOCAL_LLM_BASE_URL.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {settings.LOCAL_LLM_API_KEY or 'ollama'}"},
+            timeout=LOCAL_STATUS_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        model_ids = {
+            str(item.get("id") or item.get("name") or "").strip()
+            for item in payload.get("data", [])
+            if isinstance(item, dict)
+        }
+        return settings.LOCAL_CHAT_MODEL in model_ids
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Local LLM health check failed (%s)", type(exc).__name__)
+        return False
+
+
+def get_llm_runtime_status(*, probe_local: bool = False) -> dict[str, Any]:
+    circuit = _primary_circuit.snapshot()
+    primary_configured = bool(_primary_api_key())
     return {
-        "primaryConfigured": bool(_primary_api_key()),
+        "primaryConfigured": primary_configured,
+        "primaryAvailable": primary_configured and circuit["state"] == "closed",
         "fallbackEnabled": _fallback_enabled(),
+        "localAvailable": _local_model_available() if probe_local else _fallback_enabled(),
         "localBaseUrl": settings.LOCAL_LLM_BASE_URL if _fallback_enabled() else None,
         "localChatModel": settings.LOCAL_CHAT_MODEL if _fallback_enabled() else None,
         "localVisionModel": settings.LOCAL_VISION_MODEL if _fallback_enabled() else None,
         "localAuxiliaryEnabled": bool(_fallback_enabled() and settings.LOCAL_LLM_AUXILIARY_ENABLED),
-        "primaryCircuit": _primary_circuit.snapshot(),
+        "primaryCircuit": circuit,
     }
 
 
@@ -138,6 +175,86 @@ def is_fallback_eligible(exc: Exception) -> bool:
     # RuntimeError. Unknown failures are eligible so the deterministic fallback
     # remains reachable instead of turning a provider outage into an API 500.
     return True
+
+
+def _download_local_image_as_data_url(image_url: str) -> str:
+    """Download a trusted Supabase image and encode it for Ollama vision input."""
+    if image_url.startswith("data:image/"):
+        return image_url
+
+    image_parts = urlparse(image_url)
+    supabase_parts = urlparse(settings.SUPABASE_URL)
+    if (
+        image_parts.scheme not in {"http", "https"}
+        or not image_parts.netloc
+        or image_parts.netloc.lower() != supabase_parts.netloc.lower()
+    ):
+        raise ValueError("Local vision images must use the configured Supabase host.")
+
+    import httpx
+
+    image_bytes = bytearray()
+    with httpx.stream(
+        "GET",
+        image_url,
+        timeout=LOCAL_IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type not in LOCAL_IMAGE_CONTENT_TYPES:
+            raise ValueError(f"Unsupported local vision image type: {content_type or 'unknown'}")
+
+        content_length = response.headers.get("content-length")
+        if content_length and int(content_length) > LOCAL_IMAGE_MAX_BYTES:
+            raise ValueError("Local vision image exceeds the 8MB size limit.")
+
+        for chunk in response.iter_bytes():
+            image_bytes.extend(chunk)
+            if len(image_bytes) > LOCAL_IMAGE_MAX_BYTES:
+                raise ValueError("Local vision image exceeds the 8MB size limit.")
+
+    if not image_bytes:
+        raise ValueError("Local vision image is empty.")
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def _prepare_local_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert remote OpenAI image parts to data URLs accepted by local Ollama."""
+    local_messages = copy.deepcopy(messages)
+    converted_urls: dict[str, str] = {}
+
+    for message in local_messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image = part.get("image_url")
+            if isinstance(image, str):
+                image_url = image
+            elif isinstance(image, dict):
+                image_url = image.get("url")
+            else:
+                continue
+            if not isinstance(image_url, str) or not image_url:
+                continue
+
+            data_url = converted_urls.get(image_url)
+            if data_url is None:
+                data_url = _download_local_image_as_data_url(image_url)
+                converted_urls[image_url] = data_url
+            if isinstance(image, str):
+                part["image_url"] = data_url
+            else:
+                image["url"] = data_url
+
+    if converted_urls:
+        logger.info("Prepared %d image(s) as base64 for local vision", len(converted_urls))
+    return local_messages
 
 
 def _create_completion(
@@ -224,10 +341,11 @@ def chat_completion(
 
     if allow_local_fallback and _fallback_enabled():
         try:
+            local_messages = _prepare_local_messages(messages)
             response = _create_completion(
                 api_key=settings.LOCAL_LLM_API_KEY or "ollama",
                 model=local_model,
-                messages=messages,
+                messages=local_messages,
                 temperature=temperature,
                 timeout=settings.LOCAL_LLM_TIMEOUT_SECONDS,
                 response_format=response_format,

@@ -15,6 +15,13 @@ type GardenEditForm = GardenForm & { description: string };
 const emptyForm: GardenForm = { name: "", location: "", sunlight: "", soilType: "", cultivationType: "mixed", representativeCrop: "" };
 const emptyEditForm: GardenEditForm = { ...emptyForm, description: "" };
 
+function gardenPlantLabel(plant: Plant) {
+  const species = (plant.displaySpecies || plant.species || "").trim();
+  return species && species.toLocaleLowerCase() !== plant.name.trim().toLocaleLowerCase()
+    ? `${plant.name} · ${species}`
+    : plant.name;
+}
+
 export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
   const [gardens, setGardens] = useState<Garden[]>([]);
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -263,8 +270,8 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
                       <button className="is-danger" type="button" disabled={busy} onClick={() => { setPendingDeleteId(garden.id); setEditingId(null); }}>삭제</button>
                     </div>
                   </div>
-                  <p className="garden-card-meta">{garden.location || "위치 미등록"} · 작물 {members.length}종</p>
-                  <p className="garden-cultivation-summary"><strong>{garden.cultivationType === "single" ? "단일 작물" : "여러 작물"}</strong>{garden.representativeCrop && <span>대표 작물 · {garden.representativeCrop}</span>}</p>
+                  <p className="garden-card-meta">{garden.location || "위치 미등록"} · 식물 {members.length}개</p>
+                  <p className="garden-cultivation-summary"><strong>{garden.cultivationType === "single" ? "단일 작물" : "여러 작물"}</strong>{members.length === 0 && garden.representativeCrop && <span>대표 작물 · {garden.representativeCrop}</span>}</p>
                   {garden.description && <p className="garden-card-desc">{garden.description}</p>}
                   <dl className="garden-card-facts">
                     {garden.sunlight && <div><dt>일조</dt><dd>{garden.sunlight}</dd></div>}
@@ -287,7 +294,7 @@ export function GardenPage({ onNavigate, onAuthError }: GardenPageProps) {
                         {members.map((plant) => (
                           <li key={plant.id}>
                             <span className="material-symbols-outlined" aria-hidden="true">eco</span>
-                            <span>{plant.name}</span>
+                            <span>{gardenPlantLabel(plant)}</span>
                             <button type="button" aria-label={`${plant.name}을(를) 텃밭에서 빼기`} disabled={busy} onClick={() => assignPlant(plant.id, null)}>×</button>
                           </li>
                         ))}

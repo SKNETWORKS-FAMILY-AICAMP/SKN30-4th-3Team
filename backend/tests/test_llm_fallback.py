@@ -158,6 +158,32 @@ def test_circuit_breaker_skips_primary_after_threshold(monkeypatch):
     assert llm_client.get_llm_runtime_status()["primaryCircuit"]["state"] == "open"
 
 
+def test_runtime_status_reports_reachable_local_model(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen3-vl:4b-instruct"}]}
+
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: FakeResponse())
+
+    status = llm_client.get_llm_runtime_status(probe_local=True)
+
+    assert status["localAvailable"] is True
+
+
+def test_runtime_status_reports_unreachable_local_model(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise ConnectionError("pod stopped")
+
+    monkeypatch.setattr("httpx.get", unavailable)
+
+    status = llm_client.get_llm_runtime_status(probe_local=True)
+
+    assert status["localAvailable"] is False
+
+
 def test_bad_request_does_not_fallback(monkeypatch):
     class BadRequest(RuntimeError):
         status_code = 400
@@ -205,6 +231,7 @@ def test_local_fallback_can_be_disabled_for_auxiliary_calls(monkeypatch):
 def test_vision_uses_local_model_without_openai_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.com")
     payload = {
         "observedSymptoms": ["잎 끝 갈변"],
         "affectedParts": ["잎"],
@@ -213,6 +240,23 @@ def test_vision_uses_local_model_without_openai_key(monkeypatch):
     }
     calls = install_fake_openai(monkeypatch, local_result=json.dumps(payload, ensure_ascii=False))
     monkeypatch.setattr(vision, "create_signed_image_url", lambda db, storage_path: "https://example.com/signed.jpg")
+
+    class FakeImageResponse:
+        headers = {"content-type": "image/jpeg", "content-length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            yield b"test"
+
+    monkeypatch.setattr("httpx.stream", lambda *args, **kwargs: FakeImageResponse())
 
     result = vision.analyze_plant_image(object(), "plants/test/photo.jpg", "잎 끝이 왜 갈색인가요?")
 
@@ -223,6 +267,7 @@ def test_vision_uses_local_model_without_openai_key(monkeypatch):
 
 def test_vision_respects_explicit_local_selection(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.com")
     payload = {
         "observedSymptoms": ["잎 끝 갈변"],
         "affectedParts": ["잎"],
@@ -236,6 +281,23 @@ def test_vision_respects_explicit_local_selection(monkeypatch):
     )
     monkeypatch.setattr(vision, "create_signed_image_url", lambda db, storage_path: "https://example.com/signed.jpg")
 
+    class FakeImageResponse:
+        headers = {"content-type": "image/jpeg", "content-length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            yield b"test"
+
+    monkeypatch.setattr("httpx.stream", lambda *args, **kwargs: FakeImageResponse())
+
     vision.analyze_plant_image(
         object(),
         "plants/test/photo.jpg",
@@ -245,6 +307,124 @@ def test_vision_respects_explicit_local_selection(monkeypatch):
     )
 
     assert [provider for provider, _ in calls] == ["local"]
+
+
+def test_local_vision_converts_signed_url_to_base64(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://project.supabase.co")
+    payload = {
+        "observedSymptoms": [],
+        "affectedParts": [],
+        "severity": "판단불가",
+        "description": "사진이 흐립니다.",
+    }
+    calls = install_fake_openai(monkeypatch, local_result=json.dumps(payload, ensure_ascii=False))
+    monkeypatch.setattr(
+        vision,
+        "create_signed_image_url",
+        lambda db, storage_path: "https://project.supabase.co/storage/v1/object/sign/photo.jpg?token=secret",
+    )
+
+    class FakeImageResponse:
+        headers = {"content-type": "image/jpeg", "content-length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            yield b"test"
+
+    monkeypatch.setattr("httpx.stream", lambda *args, **kwargs: FakeImageResponse())
+
+    vision.analyze_plant_image(
+        object(),
+        "plants/test/photo.jpg",
+        "잎 상태를 봐주세요.",
+        preferred_provider="local",
+    )
+
+    image_part = calls[0][1]["messages"][1]["content"][1]
+    assert image_part["image_url"]["url"] == "data:image/jpeg;base64,dGVzdA=="
+
+
+def test_openai_vision_keeps_signed_url_without_downloading(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    signed_url = "https://project.supabase.co/storage/v1/object/sign/photo.jpg?token=secret"
+    payload = {
+        "observedSymptoms": [],
+        "affectedParts": [],
+        "severity": "판단불가",
+        "description": "사진이 흐립니다.",
+    }
+    calls = install_fake_openai(monkeypatch, primary_result=json.dumps(payload, ensure_ascii=False))
+    monkeypatch.setattr(vision, "create_signed_image_url", lambda db, storage_path: signed_url)
+    monkeypatch.setattr(
+        "httpx.stream",
+        lambda *args, **kwargs: pytest.fail("OpenAI vision must keep using the signed URL"),
+    )
+
+    vision.analyze_plant_image(object(), "plants/test/photo.jpg", "잎 상태를 봐주세요.")
+
+    image_part = calls[0][1]["messages"][1]["content"][1]
+    assert image_part["image_url"]["url"] == signed_url
+
+
+def test_openai_failure_converts_image_before_local_fallback(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://project.supabase.co")
+    calls = install_fake_openai(
+        monkeypatch,
+        primary_error=TimeoutError("primary timeout"),
+        local_result='{"summary":"local"}',
+    )
+
+    class FakeImageResponse:
+        headers = {"content-type": "image/png"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            yield b"png"
+
+    monkeypatch.setattr("httpx.stream", lambda *args, **kwargs: FakeImageResponse())
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "사진을 봐주세요."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://project.supabase.co/storage/v1/object/sign/photo.png?token=secret"
+                    },
+                },
+            ],
+        }
+    ]
+
+    result = llm_client.chat_completion(
+        messages=messages,
+        primary_model="gpt-5.4",
+        local_model="qwen3-vl:4b-instruct",
+    )
+
+    assert result.provider == "local"
+    assert calls[0][1]["messages"][0]["content"][1]["image_url"]["url"].startswith("https://")
+    assert calls[1][1]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,cG5n"
+    assert messages[0]["content"][1]["image_url"]["url"].startswith("https://")
 
 
 def test_structured_response_strips_thinking_and_normalizes_vision_severity():
