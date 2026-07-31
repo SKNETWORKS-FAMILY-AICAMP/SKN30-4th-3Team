@@ -1,6 +1,7 @@
 """8~9단계: 답변 생성 및 안전성 검토 노드."""
 import logging
 import os
+import re
 from typing import Dict, Any
 
 from app.core.config import settings
@@ -16,8 +17,87 @@ from app.services.rag.common import (
     plant_persona_status,
     recall_user_name,
 )
+from app.services.rag.pesticide_guard import is_pesticide_document
 
 logger = logging.getLogger(__name__)
+
+GROUNDING_STOPWORDS = {
+    "관련", "공식", "근거", "기록", "내용", "문서", "문제", "사용자", "상태",
+    "식물", "자료", "질문", "확인", "가능성", "관찰", "관리", "답변", "정보",
+}
+
+
+def _grounding_terms(text: str) -> set[str]:
+    """Extract stable Korean/English terms for a lightweight grounding check."""
+    terms: set[str] = set()
+    for raw in re.findall(r"[가-힣A-Za-z0-9]+", str(text or "").lower()):
+        term = raw
+        for suffix in ("에서는", "으로는", "에게서", "부터", "까지", "으로", "에서", "에게", "처럼", "보다", "하고", "이며", "에는", "이라", "라고", "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도"):
+            if len(term) > len(suffix) + 1 and term.endswith(suffix):
+                term = term[: -len(suffix)]
+                break
+        if len(term) >= 2 and term not in GROUNDING_STOPWORDS:
+            terms.add(term)
+    return terms
+
+
+def answer_uses_retrieved_evidence(answer: GeneratedAnswer, docs: list[dict[str, Any]]) -> bool:
+    """Require both the model's evidence note and visible answer to reflect retrieved facts."""
+    document_text = " ".join(
+        f"{(doc.get('metadata') or {}).get('title') or ''} {doc.get('content') or ''}"
+        for doc in docs
+    )
+    document_terms = _grounding_terms(document_text)
+    if not document_terms:
+        return False
+
+    evidence_overlap = document_terms & _grounding_terms(answer.evidenceNotes)
+    visible_text = " ".join([
+        answer.summary,
+        *answer.possibleCauses,
+        *answer.todayActions,
+        *answer.observationChecklist,
+    ])
+    visible_overlap = document_terms & _grounding_terms(visible_text)
+    required_overlap = 1 if len(document_terms) == 1 else 2
+    return len(evidence_overlap) >= required_overlap and len(visible_overlap) >= required_overlap
+
+
+def _fallback_evidence_lead(docs: list[dict[str, Any]]) -> str:
+    """Build a transparent, bounded evidence lead when a generated answer is rejected."""
+    first_doc = docs[0]
+    metadata = first_doc.get("metadata") or {}
+    title = metadata.get("title") or "출처 미상 자료"
+    if is_pesticide_document(first_doc):
+        return f"검색된 농약 안전 자료 ‘{title}’가 근거로 확인됐으며, 구체적인 사용은 출처와 제품 라벨 확인이 필요합니다."
+    excerpt = make_excerpt(first_doc.get("content") or "", max_len=180)
+    if excerpt:
+        return f"검색된 공식 자료 ‘{title}’에서 다음 내용을 확인했습니다: {excerpt}"
+    return f"검색된 공식 자료 ‘{title}’를 현재 답변의 근거로 확인했습니다."
+
+
+def _no_evidence_result(*, plant_label: str, companion_mode: bool) -> Dict[str, Any]:
+    """Return a restrained answer without calling an LLM when retrieval found zero documents."""
+    if companion_mode:
+        summary = f"지금 검색된 나({plant_label})의 공식 근거 문서가 0건이라서, 현재 정보만으로 원인을 확실하게 말하기 어려워."
+        possible_causes = ["공식 자료가 검색되지 않아 원인 후보를 근거 있게 좁힐 수 없어."]
+        today_actions = ["내 잎 앞뒤와 흙 표면 사진을 남기고, 마지막 물 준 날짜와 빛을 받는 시간을 알려줘."]
+        checklist = ["잎 변화 위치, 흙 마름 정도, 줄기 무름이나 냄새를 기록해줘."]
+    else:
+        summary = "현재 질문과 일치하는 공식 검색 근거 문서가 0건이므로, 현재 정보만으로 원인을 확정하거나 구체적인 처치를 권하기 어렵습니다."
+        possible_causes = ["검색 근거가 없어 증상만으로 원인 후보를 신뢰성 있게 좁힐 수 없습니다."]
+        today_actions = ["잎 앞뒤와 흙 표면 사진, 최근 물 준 날짜, 빛을 받는 시간을 추가로 기록해 주세요."]
+        checklist = ["증상이 시작된 시점과 부위, 흙 마름 정도, 줄기 무름이나 냄새를 확인해 주세요."]
+    return {
+        "draft_answer": {
+            "summary": summary,
+            "possibleCauses": possible_causes,
+            "todayActions": today_actions,
+            "observationChecklist": checklist,
+            "citations": [],
+        },
+        "generation_notice": "현재 질문과 일치하는 공식 검색 근거 문서가 0건이어서 제한된 관찰 안내만 제공합니다.",
+    }
 
 
 # 7. generate_answer 노드
@@ -112,6 +192,9 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
             "excerpt": make_excerpt(doc.get("content") or ""),
             "section": metadata.get("section") or metadata.get("category") or metadata.get("source_type")
         })
+
+    if not docs:
+        return _no_evidence_result(plant_label=plant_label, companion_mode=is_companion_mode)
         
     if openai_key or settings.LLM_FALLBACK_ENABLED:
         try:
@@ -154,11 +237,11 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                             "당신은 식물과 텃밭 관리 상담을 돕는 AI입니다. 반드시 사용자의 등록 정보, 최근 관리 기록, 검색된 공식 문서만 근거로 답하세요. "
                             "모든 답변은 JSON 객체만 출력합니다. "
                             "필드: evidenceNotes(string), summary(string), possibleCauses(string[]), todayActions(string[]), observationChecklist(string[]). "
-                            "evidenceNotes 필드에는 사용자에게 보여줄 수 있는 짧은 근거 요약만 작성하세요. 내부 추론 과정이나 생각의 흐름은 출력하지 마세요. "
+                            "evidenceNotes 필드에는 사용한 문서 제목과 그 문서에서 직접 확인한 구체적인 사실 1~2개를 작성하세요. 내부 추론 과정이나 생각의 흐름은 출력하지 마세요. "
                             f"{mode_instruction}"
                             "이전 대화 메모리는 사용자의 선호, 이름, 직전 맥락을 이해하는 보조 정보로만 사용하세요. "
                             "현재 질문과 무관한 이전 증상, 이전 문서, 이전 답변 근거를 새 답변에 끌어오지 마세요. "
-                            "현재 검색된 공식 문서가 없으면 문서 근거가 없다고 명확히 말하세요. "
+                            "검색된 공식 문서가 제공됐다면 정보가 없다고 답하지 말고, 문서의 구체적인 사실을 summary와 행동 항목에 반드시 반영하세요. "
                             "질병명 확정, 농약 직접 처방, 과도한 단정은 피하고 '~가능성', '관찰 필요' 중심으로 말하세요. "
                             "사진 분석 결과가 있으면 이를 관찰 근거로 반영하되, 사진만으로 확정 진단하지 마세요. "
                             "검색 문서가 부족하면 부족하다고 말하고 추가 사진/물주기/빛/흙 상태 정보를 요청하세요. "
@@ -181,17 +264,24 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
 
             raw_content = str(completion.response.choices[0].message.content or "").strip()
             ans = GeneratedAnswer.model_validate(parse_json_object(raw_content))
-            return {
-                "draft_answer": {
-                    "summary": ans.summary or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
-                    "possibleCauses": ans.possibleCauses or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
-                    "todayActions": ans.todayActions or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
-                    "observationChecklist": ans.observationChecklist or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
-                    "citations": citations
-                },
-                "llm_provider_used": completion.provider,
-                "llm_model_used": completion.model,
-            }
+            if answer_uses_retrieved_evidence(ans, docs):
+                return {
+                    "draft_answer": {
+                        "summary": ans.summary or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
+                        "possibleCauses": ans.possibleCauses or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
+                        "todayActions": ans.todayActions or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
+                        "observationChecklist": ans.observationChecklist or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
+                        "citations": citations
+                    },
+                    "llm_provider_used": completion.provider,
+                    "llm_model_used": completion.model,
+                }
+            logger.warning(
+                "Generated answer did not reflect retrieved evidence; using evidence fallback (provider=%s, model=%s)",
+                completion.provider,
+                completion.model,
+            )
+            generation_notice = "생성된 답변이 검색 문서의 구체적인 근거를 충분히 반영하지 않아, 확인된 문서 내용과 기본 관찰 가이드로 대체했습니다."
         except Exception as exc:
             logger.warning(
                 "AI answer generation failed; using evidence fallback (model=%s, %s: %s)",
@@ -208,36 +298,7 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
     # unrelated questions and produced the same fallback answer repeatedly.
     combined_signal_text = f"{question} {image_description} {' '.join(state.get('image_signals') or [])}".lower()
 
-    if not docs:
-        if is_companion_mode:
-            summary = f"지금은 나({plant_label})에 대한 공식 문서 근거가 충분하지 않아서 확실히 말하긴 어려워. 그래도 오늘 내 잎, 흙, 빛 상태를 같이 보면 다음 답변은 훨씬 정확해질 거야."
-            possible_causes = [
-                "내 최근 물주기나 빛 기록이 부족해서 컨디션 원인을 좁히기 어려워.",
-                "사진이나 재배 일지가 없으면 잎 변화가 일시적인지 관리 문제인지 헷갈릴 수 있어."
-            ]
-            today_actions = [
-                "내 잎 앞뒤랑 흙 표면 사진을 한 장씩 남겨줘.",
-                "마지막으로 물 준 날짜와 흙이 마르는 속도를 기록해줘."
-            ]
-            checklist = [
-                "새잎까지 색 변화가 번지는지 봐줘.",
-                "줄기 밑동이 무르거나 흙 냄새가 이상한지 확인해줘."
-            ]
-        else:
-            summary = "현재 질문과 식물 기록만으로는 공식 문서 근거가 충분하지 않아 확정적인 판단은 어렵습니다."
-            possible_causes = [
-                "최근 물주기, 빛, 통풍, 흙 상태 정보가 부족합니다.",
-                "사진이나 재배 일지 없이 증상만으로는 원인 후보를 좁히기 어렵습니다."
-            ]
-            today_actions = [
-                "잎 앞뒤, 줄기 밑동, 흙 표면 사진을 추가로 기록합니다.",
-                "최근 물 준 날짜와 흙이 마르는 속도를 재배 일지에 남깁니다."
-            ]
-            checklist = [
-                "잎 색 변화가 새잎까지 번지는지 확인합니다.",
-                "줄기 밑동이 무르거나 흙 냄새가 나는지 확인합니다."
-            ]
-    elif any(token in combined_signal_text for token in ["과습", "물주기", "젖", "축축", "무름", "뿌리"]):
+    if any(token in combined_signal_text for token in ["과습", "물주기", "젖", "축축", "무름", "뿌리"]):
         summary = "입력된 증상과 검색 문서를 보면 과습 또는 배수 불량 가능성을 우선 점검해야 합니다."
         possible_causes = [
             "배수가 잘 되지 않거나 흙이 마르기 전 잦은 관수",
@@ -311,6 +372,8 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
             "3~7일 동안 증상이 새잎으로 확산되는지 확인합니다.",
             "물주기 후 회복되는지 또는 더 처지는지 관찰합니다."
         ]
+
+    summary = f"{_fallback_evidence_lead(docs)} {summary}"
 
     if is_companion_mode and not summary.startswith("지금은 나("):
         summary = f"나({plant_label}) 상태를 보면, {summary.replace('입니다.', '인 것 같아.').replace('합니다.', '해줘.')}"
