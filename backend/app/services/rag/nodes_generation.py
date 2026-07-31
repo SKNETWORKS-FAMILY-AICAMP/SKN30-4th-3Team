@@ -25,6 +25,7 @@ GROUNDING_STOPWORDS = {
     "관련", "공식", "근거", "기록", "내용", "문서", "문제", "사용자", "상태",
     "식물", "자료", "질문", "확인", "가능성", "관찰", "관리", "답변", "정보",
 }
+COMPANION_ENDING_EMOJIS = ("🌱", "🌿", "🍃", "💚")
 
 
 def _grounding_terms(text: str) -> set[str]:
@@ -76,6 +77,36 @@ def _fallback_evidence_lead(docs: list[dict[str, Any]]) -> str:
     return f"검색된 공식 자료 ‘{title}’를 현재 답변의 근거로 확인했습니다."
 
 
+def _with_companion_ending(draft: dict[str, Any], plant_label: str) -> dict[str, Any]:
+    """Add one deterministic plant emoji to the last conversational guidance item."""
+    styled = dict(draft)
+    emoji = COMPANION_ENDING_EMOJIS[sum(ord(char) for char in plant_label) % len(COMPANION_ENDING_EMOJIS)]
+
+    def without_companion_emojis(value: Any) -> str:
+        text = str(value or "")
+        for mark in COMPANION_ENDING_EMOJIS:
+            text = text.replace(mark, "")
+        return " ".join(text.split())
+
+    styled["summary"] = without_companion_emojis(styled.get("summary"))
+    for key in ("possibleCauses", "todayActions", "observationChecklist"):
+        styled[key] = [without_companion_emojis(item) for item in styled.get(key) or []]
+
+    for key in ("observationChecklist", "todayActions", "possibleCauses"):
+        items = list(styled.get(key) or [])
+        if not items:
+            continue
+        ending = str(items[-1]).rstrip()
+        items[-1] = f"{ending} {emoji}"
+        styled[key] = items
+        return styled
+
+    summary = str(styled.get("summary") or "").rstrip()
+    if summary:
+        styled["summary"] = f"{summary} {emoji}"
+    return styled
+
+
 def _no_evidence_result(*, plant_label: str, companion_mode: bool) -> Dict[str, Any]:
     """Return a restrained answer without calling an LLM when retrieval found zero documents."""
     if companion_mode:
@@ -88,14 +119,15 @@ def _no_evidence_result(*, plant_label: str, companion_mode: bool) -> Dict[str, 
         possible_causes = ["검색 근거가 없어 증상만으로 원인 후보를 신뢰성 있게 좁힐 수 없습니다."]
         today_actions = ["잎 앞뒤와 흙 표면 사진, 최근 물 준 날짜, 빛을 받는 시간을 추가로 기록해 주세요."]
         checklist = ["증상이 시작된 시점과 부위, 흙 마름 정도, 줄기 무름이나 냄새를 확인해 주세요."]
+    draft = {
+        "summary": summary,
+        "possibleCauses": possible_causes,
+        "todayActions": today_actions,
+        "observationChecklist": checklist,
+        "citations": [],
+    }
     return {
-        "draft_answer": {
-            "summary": summary,
-            "possibleCauses": possible_causes,
-            "todayActions": today_actions,
-            "observationChecklist": checklist,
-            "citations": [],
-        },
+        "draft_answer": _with_companion_ending(draft, plant_label) if companion_mode else draft,
         "generation_notice": "현재 질문과 일치하는 공식 검색 근거 문서가 0건이어서 제한된 관찰 안내만 제공합니다.",
     }
 
@@ -128,43 +160,40 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
             summary = f"알겠어. 네 이름은 {remembered_name}이야. 이 상담방에서는 그렇게 기억해둘게."
         else:
             summary = f"알겠습니다. 사용자님의 이름은 {remembered_name}입니다. 이 상담방에서 그렇게 기억해두겠습니다."
-        return {
-            "draft_answer": {
-                "summary": summary,
-                "possibleCauses": [],
-                "todayActions": ["이 이름은 현재 상담방의 대화 맥락에서 이어서 참고합니다."],
-                "observationChecklist": [],
-                "citations": [],
-            }
+        draft = {
+            "summary": summary,
+            "possibleCauses": [],
+            "todayActions": ["이 이름은 현재 상담방의 대화 맥락에서 이어서 참고합니다."],
+            "observationChecklist": [],
+            "citations": [],
         }
+        return {"draft_answer": _with_companion_ending(draft, plant_label) if is_companion_mode else draft}
 
     if is_user_name_question(question):
         if remembered_name:
             summary = f"네 이름은 {remembered_name}이야." if is_companion_mode else f"사용자님의 이름은 {remembered_name}입니다."
         else:
             summary = "아직 이 상담방에서 이름을 들은 기록을 찾지 못했어." if is_companion_mode else "아직 이 상담방에서 사용자님의 이름을 확인한 기록이 없습니다."
-        return {
-            "draft_answer": {
-                "summary": summary,
-                "possibleCauses": [],
-                "todayActions": [],
-                "observationChecklist": [],
-                "citations": [],
-            }
+        draft = {
+            "summary": summary,
+            "possibleCauses": [],
+            "todayActions": [],
+            "observationChecklist": [],
+            "citations": [],
         }
+        return {"draft_answer": _with_companion_ending(draft, plant_label) if is_companion_mode else draft}
     
     if is_smalltalk_question(question):
         if is_companion_mode:
             persona_status = plant_persona_status(plant, state.get("care_logs") or [])
-            return {
-                "draft_answer": {
-                    "summary": f"안녕, 나 {plant_label}야. {persona_status} 오늘 내 잎이나 흙 상태가 궁금하면 편하게 물어봐. 사진도 같이 보내주면 내가 지금 어떤 느낌인지 더 잘 말해볼게.",
-                    "possibleCauses": ["아직 구체적인 질문이나 상태 사진이 없어서 내 컨디션을 정확히 말하긴 어려워."],
-                    "todayActions": ["오늘은 내 흙이 얼마나 말랐는지 한 번 만져봐 줘.", "빛이 너무 세거나 바람이 바로 닿는 곳은 아닌지도 봐줘."],
-                    "observationChecklist": ["잎 색이 변했는지", "흙이 젖어 있는지", "마지막 물 준 날이 언제인지", "새잎이 잘 펴지는지"],
-                    "citations": [],
-                }
+            draft = {
+                "summary": f"안녕! 나 {plant_label}야. {persona_status} 오늘 내 잎이나 흙 상태가 궁금하면 편하게 물어봐. 사진도 같이 보내주면 내가 지금 어떤 느낌인지 더 잘 말해볼게!",
+                "possibleCauses": ["아직 구체적인 질문이나 상태 사진이 없어서 내 컨디션을 정확히 말하긴 어려워."],
+                "todayActions": ["오늘은 내 흙이 얼마나 말랐는지 한 번 만져봐 줘.", "빛이 너무 세거나 바람이 바로 닿는 곳은 아닌지도 같이 봐줘!"],
+                "observationChecklist": ["잎 색이 변했는지", "흙이 젖어 있는지", "마지막 물 준 날이 언제인지", "새잎이 잘 펴지는지"],
+                "citations": [],
             }
+            return {"draft_answer": _with_companion_ending(draft, plant_label)}
         subject_label = f"{plant_label} 텃밭" if is_garden else plant_label
         return {
             "draft_answer": {
@@ -208,10 +237,12 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
                 f"[내 실제 상태] {persona_status} "
                 "위의 실제 상태(물 마신 지 며칠째인지, 권장 주기, 함께한 기간)를 대화 흐름에 자연스럽게 녹여 말하세요. "
                 "예: '나 3일째 물 못 마셨어.', '우리 같이 산 지 벌써 한 달이 넘었네.' 단, 질문과 무관하면 억지로 언급하지 마세요. "
-                "친근한 반말을 사용하되 유치하거나 과장하지 말고, 식물이 부탁하는 듯한 짧은 문장을 섞으세요. "
+                "친근한 반말을 사용하고, 가벼운 감탄과 짧은 리듬을 섞어 지금보다 조금 더 발랄하고 생기 있게 말하세요. "
+                "다만 지나친 아기 말투, 반복되는 감탄사, 과장된 애교는 피하고 식물이 부탁하는 듯한 짧은 문장을 섞으세요. "
                 "예: '나 내일 흙이 말라 있으면 물 한 번 부탁해.', '오늘은 빛이 너무 세지 않은지 봐줘.' "
+                "식물 또는 귀여운 이모티콘은 전체 답변에서 1개 정도만 사용하고, observationChecklist의 마지막 항목 끝에 자연스럽게 붙이세요. "
                 "possibleCauses도 '내가 힘든 이유 후보'처럼 자연스럽게 쓰고, todayActions는 사용자가 식물을 돌보는 행동으로 작성하세요. "
-                "공식 문서 근거가 부족하면 '확실히는 모르겠어'라고 말하세요. 안전 관련 내용은 장난처럼 표현하지 마세요. "
+                "공식 문서 근거가 부족하면 '확실히는 모르겠어'라고 말하세요. 질병, 농약, 안전 관련 내용에는 이모티콘이나 장난스러운 표현을 사용하지 마세요. "
             ) if is_companion_mode else (
                 "답변 모드는 '전문가와 상담하기'입니다. 차분하고 전문적인 상담 말투를 사용하세요. "
                 "summary는 한 문단의 자연스러운 상담 말투로 작성하고, todayActions는 사용자가 바로 따라 할 수 있는 구체적인 행동으로 작성하세요. "
@@ -265,14 +296,15 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
             raw_content = str(completion.response.choices[0].message.content or "").strip()
             ans = GeneratedAnswer.model_validate(parse_json_object(raw_content))
             if answer_uses_retrieved_evidence(ans, docs):
+                draft = {
+                    "summary": ans.summary or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
+                    "possibleCauses": ans.possibleCauses or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
+                    "todayActions": ans.todayActions or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
+                    "observationChecklist": ans.observationChecklist or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
+                    "citations": citations,
+                }
                 return {
-                    "draft_answer": {
-                        "summary": ans.summary or "입력된 식물 상태와 공식 자료를 바탕으로 관리 가이드를 정리했습니다.",
-                        "possibleCauses": ans.possibleCauses or ["입력 정보만으로 확정하기 어려워 추가 관찰이 필요합니다."],
-                        "todayActions": ans.todayActions or ["흙 수분, 빛, 통풍 상태를 먼저 확인합니다."],
-                        "observationChecklist": ans.observationChecklist or ["잎 색 변화, 줄기 무름, 흙 냄새를 3~7일간 관찰합니다."],
-                        "citations": citations
-                    },
+                    "draft_answer": _with_companion_ending(draft, plant_label) if is_companion_mode else draft,
                     "llm_provider_used": completion.provider,
                     "llm_model_used": completion.model,
                 }
@@ -388,12 +420,18 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
         ]
         
     return {
-        "draft_answer": {
+        "draft_answer": _with_companion_ending({
             "summary": summary,
             "possibleCauses": possible_causes,
             "todayActions": today_actions,
             "observationChecklist": checklist,
             "citations": citations
+        }, plant_label) if is_companion_mode else {
+            "summary": summary,
+            "possibleCauses": possible_causes,
+            "todayActions": today_actions,
+            "observationChecklist": checklist,
+            "citations": citations,
         },
         "generation_notice": generation_notice
     }
