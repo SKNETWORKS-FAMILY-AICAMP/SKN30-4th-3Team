@@ -1,0 +1,93 @@
+digraph FarmhaniRagFlow {
+  graph [
+    rankdir=TB,
+    bgcolor="transparent",
+    pad="0.3",
+    nodesep="0.32",
+    ranksep="0.65",
+    splines=spline,
+    fontname="Malgun Gothic",
+    fontsize=18,
+    label="Farm하니 v2 상담/RAG 런타임 흐름",
+    labelloc=t,
+    labeljust=l
+    ordering=out
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Malgun Gothic",
+    fontsize=10,
+    color="#9BCDB8",
+    fillcolor="#F4FBF7",
+    fontcolor="#153C31",
+    margin="0.16,0.10"
+  ];
+  edge [fontname="Malgun Gothic", fontsize=8.5, color="#4B7F6D", fontcolor="#315D4E", arrowsize=0.7];
+
+  request [label="상담 요청\nplantId 또는 gardenId\n질문 · 사진 · 모델 · 모드", fillcolor="#C3EFDA"];
+  response [label="상담 응답\n구조화 답변 · Citation\n안전 고지 · sessionId", fillcolor="#C3EFDA"];
+
+  subgraph cluster_graph {
+    label="LangGraph StateGraph · 10단계";
+    color="#70B996";
+    style="rounded,filled";
+    fillcolor="#FBFEFC";
+
+    n1 [label="1. validate_input\nJWT 소유권 · 대상 · 사진 검증"];
+    n2 [label="2. load_chat_history\n최근 상담 이력 로드"];
+    n3 [label="3. extract_image_signals\n황화 · 반점 등 관찰 신호"];
+    n4 [label="4. summarize_user_context\n프로필 · 텃밭 · 최근 기록 요약"];
+    n5 [label="5. build_retrieval_query\n식물명 · 질문 · 이미지 신호 결합"];
+    n6 [label="6. retrieve_docs\nVector + Keyword + RRF\n작물/농약 사전 필터", fillcolor="#E0F7EB"];
+    n7 [label="7. grade_or_rerank\n질문 관련성 · 작물 일치 검증", fillcolor="#D8F4E6"];
+    n8 [label="8. generate_answer\n모델 라우팅 · 근거성 검증\n0건 시 명시적 근거 부족", fillcolor="#C3EFDA"];
+    n9 [label="9. safety_review\n확정 진단 완화 · 농약 안전 고지", fillcolor="#FFF4CF", color="#D2B76B"];
+    n10 [label="10. persist_result\n메시지 · Citation · 세션 저장"];
+
+    n1 -> n2 [weight=20];
+    n2 -> n3 [weight=20];
+    n3 -> n4 [weight=20];
+    n4 -> n5 [weight=20];
+    n5 -> n6 [weight=20];
+    n6 -> n7 [weight=20];
+    n7 -> n8 [weight=20];
+    n8 -> n9 [weight=20];
+    n9 -> n10 [weight=20];
+    { rank=same; n1; n2; n3; n4; n5; }
+    { rank=same; n6; n7; n8; n9; n10; }
+  }
+
+  subgraph cluster_services {
+    label="연동 서비스";
+    color="#BFD6CB";
+    style="rounded,filled";
+    fillcolor="#F8FCFA";
+    supa_user [label="Supabase 사용자 DB\nplants · gardens · care_logs\nchat_sessions · chat_messages"];
+    supa_vector [label="Supabase RAG 저장소\nrag_chunks · rag_sources\npsis_pesticide_chunks"];
+    storage [label="Supabase Storage\nSigned URL · 이미지"];
+    embedding [label="OpenAI Embedding\ntext-embedding-3-small"];
+    router [label="LLM Router\n선택 모델 · Fallback\nCircuit Breaker", fillcolor="#E8F4FB", color="#8CB8D8"];
+    openai [label="OpenAI\nGPT-5.4 · 5.5 · 5.6"];
+    local [label="RunPod/Ollama\nQwen3-VL 4B", fillcolor="#FFF4CF", color="#D2B76B"];
+    router -> openai [label=" Primary/선택"];
+    router -> local [label=" Local 선택/Fallback", style=dashed, color="#B58418"];
+    { rank=same; supa_user; supa_vector; storage; embedding; router; }
+  }
+
+  request -> n1;
+  n10 -> response;
+
+  supa_user -> n1 [label=" 대상 조회", constraint=false];
+  supa_user -> n2 [label=" 이력 조회", constraint=false];
+  supa_user -> n4 [label=" 관리 맥락", constraint=false];
+  n10 -> supa_user [label=" 결과 저장", constraint=false];
+  storage -> n3 [label=" 이미지 읽기", constraint=false];
+  n5 -> embedding [label=" 질의 벡터", constraint=false];
+  embedding -> n6 [label=" 1,536d", constraint=false];
+  supa_vector -> n6 [label=" RPC/Keyword", constraint=false];
+  n3 -> router [label=" Vision", constraint=false];
+  n5 -> router [label=" Query Expansion", constraint=false];
+  n7 -> router [label=" Grading", constraint=false];
+  n8 -> router [label=" Answer Generation", constraint=false];
+}

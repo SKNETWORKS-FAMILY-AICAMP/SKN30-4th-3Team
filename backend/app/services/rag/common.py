@@ -97,6 +97,92 @@ def is_smalltalk_question(question: str) -> bool:
     return normalized in greetings or (len(normalized) <= 8 and any(word in normalized for word in greetings))
 
 
+QUESTION_SCOPE_PLANT_CARE = "plant_care"
+QUESTION_SCOPE_SMALLTALK = "smalltalk"
+QUESTION_SCOPE_OUT_OF_SCOPE = "out_of_scope"
+QUESTION_SCOPE_UNDETERMINED = "undetermined"
+
+PLANT_CARE_PATTERN = re.compile(
+    r"식물|화분|텃밭|정원|잎|새순|줄기|뿌리|흙|토양|배수|물\s*주|관수|과습|"
+    r"건조|시들|마르|황화|반점|곰팡이|병해|병충|해충|벌레|응애|깍지|진딧|"
+    r"흰가루병|노균병|역병|탄저병|비료|영양|직사광선|광량|일조|통풍|분갈이|"
+    r"가지치기|발아|파종|수확|재배|키우|생육|농약|꽃|열매|작물",
+    re.IGNORECASE,
+)
+PLANT_FOLLOWUP_PATTERN = re.compile(
+    r"이거|얘가|우리\s*애|왜\s*이래|상태.{0,15}(?:어때|봐|확인)|봐\s*줘|"
+    r"사진|이렇게\s*보이|어제부터\s*이상|^상담(?:해|을)",
+    re.IGNORECASE,
+)
+SMALLTALK_PATTERN = re.compile(
+    r"안녕|고마워|감사|반가워|잘\s*지내|기분\s*어때|오늘\s*날씨.*좋|사랑해|보고\s*싶|"
+    r"내\s*이름|제\s*이름|이름\s*기억",
+    re.IGNORECASE,
+)
+
+
+def _plant_context_labels(plant_data: Optional[Dict[str, Any]]) -> List[str]:
+    """등록 식물·텃밭 데이터에서 현재 질문과 대조할 이름을 추출한다."""
+    if not plant_data:
+        return []
+
+    raw_labels: List[Any] = [
+        plant_data.get("name"),
+        plant_data.get("species"),
+        plant_data.get("representative_crop"),
+    ]
+    for member in plant_data.get("member_plants") or []:
+        if isinstance(member, dict):
+            raw_labels.extend([member.get("name"), member.get("species")])
+
+    labels: List[str] = []
+    for raw in raw_labels:
+        label = " ".join(str(raw or "").strip().lower().split())
+        if not label:
+            continue
+        labels.append(label)
+        labels.extend(
+            token
+            for token in re.findall(r"[가-힣A-Za-z]{2,}", label)
+            if len(token) >= 2
+        )
+    return list(dict.fromkeys(labels))
+
+
+def classify_question_scope(
+    question: str,
+    *,
+    plant_data: Optional[Dict[str, Any]] = None,
+    has_image: bool = False,
+) -> str:
+    """질문이 현재 식물·텃밭의 관리 상담인지 결정적으로 분류한다.
+
+    무관 주제 블랙리스트를 사용하지 않는다. 식물 관리 표현, 현재 등록된 식물명,
+    사진을 가리키는 후속 표현 중 하나가 있어야 식물 상담으로 처리하고, 그 밖의
+    정보성 질문은 undetermined로 넘겨 검색 직전 의미 판정을 받게 한다. 따라서
+    새로운 무관 주제도 카테고리 목록 없이 차단하면서 "에어컨 바람이 식물에
+    미치는 영향" 같은 질문은 유지된다.
+    """
+    normalized = " ".join((question or "").strip().lower().split())
+    if not normalized:
+        return QUESTION_SCOPE_SMALLTALK
+
+    labels = _plant_context_labels(plant_data)
+    refers_to_registered_plant = any(label in normalized for label in labels)
+    plant_followup = bool(PLANT_FOLLOWUP_PATTERN.search(normalized))
+    if (
+        PLANT_CARE_PATTERN.search(normalized)
+        or refers_to_registered_plant
+        or (has_image and plant_followup)
+        or plant_followup
+    ):
+        return QUESTION_SCOPE_PLANT_CARE
+
+    if is_smalltalk_question(question) or SMALLTALK_PATTERN.search(normalized):
+        return QUESTION_SCOPE_SMALLTALK
+    return QUESTION_SCOPE_UNDETERMINED
+
+
 def extract_user_name(text: str) -> Optional[str]:
     patterns = [
         r"(?:내\s*이름은|제\s*이름은)\s*([가-힣A-Za-z0-9_]{2,20}?)(?:이야|야|입니다|이에요|예요|라고|$)",
@@ -152,6 +238,7 @@ class AgentState(TypedDict):
     care_log_id: Optional[str]
     photo_id: Optional[str]
     question: str
+    question_scope: str
     response_mode: str
     llm_provider: Optional[str]
     llm_model: Optional[str]

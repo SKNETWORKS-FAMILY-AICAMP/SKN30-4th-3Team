@@ -17,6 +17,7 @@ from app.services.rag import nodes_context as _nodes_context
 from app.services.rag.common import (  # noqa: F401 - 하위 호환 재노출
     AgentState,
     chat_mode_prefix,
+    classify_question_scope,
     extract_user_name,
     is_smalltalk_question,
     is_user_name_question,
@@ -114,6 +115,7 @@ def _build_initial_state(
         "care_log_id": care_log_id,
         "photo_id": photo_id,
         "question": question,
+        "question_scope": classify_question_scope(question),
         "response_mode": response_mode if response_mode in {"expert", "companion"} else "expert",
         "llm_provider": llm_provider,
         "llm_model": llm_model,

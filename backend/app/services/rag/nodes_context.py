@@ -2,7 +2,12 @@
 import logging
 from typing import Dict, Any, Optional
 
-from app.services.rag.common import AgentState, chat_mode_prefix
+from app.services.rag.common import (
+    AgentState,
+    QUESTION_SCOPE_OUT_OF_SCOPE,
+    chat_mode_prefix,
+    classify_question_scope,
+)
 from app.services.rag.vision import VisionAnalysisError, analyze_plant_image
 
 logger = logging.getLogger(__name__)
@@ -68,23 +73,29 @@ def validate_input(state: AgentState) -> Dict[str, Any]:
             .execute()
         )
 
+        plant_data = {
+            "id": garden["id"],
+            "name": garden.get("name"),
+            "species": ", ".join(label for label in member_labels if label) or garden.get("representative_crop") or "등록된 식물 없음",
+            "location": garden.get("location"),
+            "sunlight": garden.get("sunlight"),
+            "soil_type": garden.get("soil_type"),
+            "description": garden.get("description"),
+            "cultivation_type": garden.get("cultivation_type") or "mixed",
+            "representative_crop": garden.get("representative_crop"),
+            "context_type": "garden",
+            "member_plants": members,
+        }
         return {
-            "plant_data": {
-                "id": garden["id"],
-                "name": garden.get("name"),
-                "species": ", ".join(label for label in member_labels if label) or garden.get("representative_crop") or "등록된 식물 없음",
-                "location": garden.get("location"),
-                "sunlight": garden.get("sunlight"),
-                "soil_type": garden.get("soil_type"),
-                "description": garden.get("description"),
-                "cultivation_type": garden.get("cultivation_type") or "mixed",
-                "representative_crop": garden.get("representative_crop"),
-                "context_type": "garden",
-                "member_plants": members,
-            },
+            "plant_data": plant_data,
             "care_logs": logs,
             "photo_data": photo_data,
             "recent_photos": recent_photos_response.data or [],
+            "question_scope": classify_question_scope(
+                state["question"],
+                plant_data=plant_data,
+                has_image=bool(photo_data),
+            ),
         }
 
     plant_response = db.table("plants").select("*").eq("id", plant_id).eq("user_id", user_id).execute()
@@ -114,11 +125,17 @@ def validate_input(state: AgentState) -> Dict[str, Any]:
 
     recent_photos_res = db.table("plant_photos").select("*").eq("plant_id", plant_id).order("created_at", desc=True).limit(5).execute()
 
+    plant_data = plant_response.data[0]
     return {
-        "plant_data": plant_response.data[0],
+        "plant_data": plant_data,
         "care_logs": logs,
         "photo_data": photo_data,
-        "recent_photos": recent_photos_res.data or []
+        "recent_photos": recent_photos_res.data or [],
+        "question_scope": classify_question_scope(
+            state["question"],
+            plant_data=plant_data,
+            has_image=bool(photo_data),
+        ),
     }
 
 def load_chat_history(state: AgentState) -> Dict[str, Any]:
@@ -225,6 +242,14 @@ def load_chat_history(state: AgentState) -> Dict[str, Any]:
 
 # 2. extract_image_signals 노드
 def extract_image_signals(state: AgentState) -> Dict[str, Any]:
+    question_scope = state.get("question_scope") or classify_question_scope(state.get("question") or "")
+    if question_scope == QUESTION_SCOPE_OUT_OF_SCOPE:
+        return {
+            "image_signals": [],
+            "image_description": "",
+            "vision_error": None,
+        }
+
     db = state["db_client"]
     photo = state.get("photo_data")
     logs = state.get("care_logs") or []

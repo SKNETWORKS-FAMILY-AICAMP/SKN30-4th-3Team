@@ -5,8 +5,19 @@ from typing import Dict, Any
 
 from app.core.config import settings
 from app.services.llm import chat_completion
-from app.services.llm.schemas import QueryExpansion, RerankDecision, parse_json_object
-from app.services.rag.common import AgentState, is_smalltalk_question
+from app.services.llm.schemas import (
+    QueryExpansion,
+    QuestionScopeDecision,
+    RerankDecision,
+    parse_json_object,
+)
+from app.services.rag.common import (
+    AgentState,
+    QUESTION_SCOPE_OUT_OF_SCOPE,
+    QUESTION_SCOPE_PLANT_CARE,
+    QUESTION_SCOPE_UNDETERMINED,
+    classify_question_scope,
+)
 from app.services.rag.pesticide_guard import apply_pesticide_guard
 from app.services.rag.plant_terms import resolve_target_crop_terms
 from app.services.rag.vectorstore import CANDIDATE_POOL_SIZE, search_documents
@@ -14,6 +25,61 @@ from app.services.rag.vectorstore import CANDIDATE_POOL_SIZE, search_documents
 logger = logging.getLogger(__name__)
 
 RERANK_INPUT_COUNT = 8
+
+
+def classify_question_scope_semantically(state: AgentState) -> str:
+    """불명확한 질문을 검색 전에 의미 기반으로 분류한다.
+
+    등록 식물 정보가 프롬프트에 있더라도 현재 질문이 그 식물의 관리와 직접
+    관련되지 않으면 out_of_scope여야 한다. 호출이나 파싱이 실패하면 무관 문서가
+    검색되는 것보다 답변을 제한하는 편이 안전하므로 fail-closed 처리한다.
+    """
+    question = state.get("question") or ""
+    plant = state.get("plant_data") or {}
+    history = state.get("chat_history") or []
+    history_text = "\n".join(
+        f"{item.get('role')}: {item.get('content')}"
+        for item in history[-4:]
+        if item.get("content")
+    )
+    try:
+        completion = chat_completion(
+            primary_model=state.get("llm_model") or os.getenv("CHAT_MODEL") or settings.CHAT_MODEL,
+            local_model=settings.LOCAL_CHAT_MODEL,
+            preferred_provider=state.get("llm_provider") or "openai",
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            primary_timeout=10.0,
+            max_tokens=100,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "당신은 식물·텃밭 관리 상담 서비스의 질문 범위 분류기입니다. "
+                        "현재 질문의 실제 의도만 보고 다음 셋 중 하나로 분류하세요. "
+                        "plant_care: 등록 식물/텃밭의 재배, 생육, 환경, 병해충, 사진 상태를 묻거나 직전 식물 상담의 자연스러운 후속 질문. "
+                        "smalltalk: 인사, 감사, 이름 기억, 가벼운 대화. "
+                        "out_of_scope: 그 밖의 일반 지식, 역사, 과학, 금융, 전자기기, 의료, 요리 등 식물 관리에 답할 필요가 없는 질문. "
+                        "상담 대상 식물명이 별도로 제공됐다는 이유만으로 plant_care를 선택하지 마세요. "
+                        "JSON {\"scope\": \"plant_care|smalltalk|out_of_scope\"}만 반환하세요."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"상담 대상: {plant.get('name') or ''} / {plant.get('species') or ''}\n"
+                        f"사진 첨부: {'있음' if state.get('photo_data') else '없음'}\n"
+                        f"직전 대화:\n{history_text or '없음'}\n\n"
+                        f"현재 질문: {question}"
+                    ),
+                },
+            ],
+        )
+        raw = str(completion.response.choices[0].message.content or "").strip()
+        return QuestionScopeDecision.model_validate(parse_json_object(raw)).scope
+    except Exception as exc:
+        logger.warning("Question scope classification failed; blocking retrieval: %s", exc)
+        return QUESTION_SCOPE_OUT_OF_SCOPE
 
 
 # 4. build_retrieval_query 노드
@@ -24,8 +90,11 @@ def build_retrieval_query(state: AgentState) -> Dict[str, Any]:
     context = state.get("user_context", "")
     image_description = state.get("image_description") or ""
 
-    if is_smalltalk_question(question):
-        return {"search_query": ""}
+    question_scope = state.get("question_scope") or classify_question_scope(question)
+    if question_scope == QUESTION_SCOPE_UNDETERMINED:
+        question_scope = classify_question_scope_semantically(state)
+    if question_scope != QUESTION_SCOPE_PLANT_CARE:
+        return {"search_query": "", "question_scope": question_scope}
     
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     if openai_key or (settings.LLM_FALLBACK_ENABLED and settings.LOCAL_LLM_AUXILIARY_ENABLED):
@@ -52,7 +121,10 @@ def build_retrieval_query(state: AgentState) -> Dict[str, Any]:
             ans = QueryExpansion.model_validate(parse_json_object(raw_content))
             queries = ans.queries[:3]
             if queries:
-                return {"search_query": " ".join(queries)}
+                return {
+                    "search_query": " ".join(queries),
+                    "question_scope": question_scope,
+                }
         except Exception as e:
             logger.warning("Query expansion failed: %s", e)
 
@@ -63,11 +135,12 @@ def build_retrieval_query(state: AgentState) -> Dict[str, Any]:
         f"사진 분석: {image_description}. "
         f"관리 맥락: {context}"
     )
-    return {"search_query": query_text}
+    return {"search_query": query_text, "question_scope": question_scope}
 
 # 5. retrieve_docs 노드
 def retrieve_docs(state: AgentState) -> Dict[str, Any]:
-    if is_smalltalk_question(state.get("question") or ""):
+    question_scope = state.get("question_scope") or classify_question_scope(state.get("question") or "")
+    if question_scope != QUESTION_SCOPE_PLANT_CARE:
         return {"retrieved_docs": [], "pesticide_docs_filtered": 0}
     plant = state.get("plant_data") or {}
     question = state.get("question") or ""
@@ -143,6 +216,9 @@ def _finalize_docs(state: AgentState, docs: list) -> Dict[str, Any]:
 def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
     docs = state["retrieved_docs"]
     question = state["question"]
+    question_scope = state.get("question_scope") or classify_question_scope(question)
+    if question_scope != QUESTION_SCOPE_PLANT_CARE:
+        return _finalize_docs(state, [])
     plant = state.get("plant_data") or {}
     plant_label = " ".join(
         str(part).strip()
@@ -206,4 +282,6 @@ def grade_or_rerank(state: AgentState) -> Dict[str, Any]:
         return _finalize_docs(state, filtered_docs)
     except Exception as e:
         logger.warning("Reranking failed: %s", e)
+        # 범위 밖 질문은 함수 진입 시 이미 빈 문서로 fail-closed 처리됐다.
+        # 식물 관리 질문만 기존 가용성 정책에 따라 상위 후보를 보존한다.
         return _finalize_docs(state, docs[:4])

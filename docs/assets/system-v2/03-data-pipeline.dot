@@ -1,0 +1,73 @@
+digraph FarmhaniDataPipeline {
+  graph [
+    rankdir=TB,
+    bgcolor="transparent",
+    pad="0.35",
+    nodesep="0.45",
+    ranksep="0.8",
+    splines=ortho,
+    fontname="Malgun Gothic",
+    fontsize=18,
+    label="Farm하니 v2 RAG 데이터 수집·가공·적재 흐름",
+    labelloc=t,
+    labeljust=l
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Malgun Gothic",
+    fontsize=10,
+    color="#A8CDBD",
+    fillcolor="#F5FBF8",
+    fontcolor="#153C31",
+    margin="0.17,0.11"
+  ];
+  edge [fontname="Malgun Gothic", fontsize=8.5, color="#58796C", fontcolor="#315D4E", arrowsize=0.7];
+
+  subgraph cluster_sources {
+    label="원천 데이터";
+    color="#C9E7DA";
+    style="rounded,filled";
+    fillcolor="#FBFEFC";
+    official [label="국내 공식·공공\n농사로 · NCPMS · PSIS\nAI Hub · 국립수목원 · KPNI"];
+    docs [label="문서·파일\nAPI · CSV · HWPX · JSONL"];
+    global [label="선별 해외 생육자료\nPerenual · PlantSolve", fillcolor="#FFF8E5", color="#D2B76B"];
+  }
+
+  collect [label="1. 수집\n출처 registry · 수집일 · 라이선스\n재현 가능한 스크립트", fillcolor="#E0F7EB"];
+  raw [label="2. 원본/중간 보관\ndata/raw · data/interim\nGit 제외 원칙"];
+  normalize [label="3. 번역·정규화\nHTML/공백 정제 · 단위 통일\n식물명/학명/별칭 매핑"];
+  select [label="4. 품질 검증·채택\n중복 제거 · 필수 필드 · 출처 확인\n안전 태그 · 미채택 격리", fillcolor="#FFF4CF", color="#D2B76B"];
+  chunk [label="5. 출처별 청킹\n문장/단락 경계 · overlap\nchunk_id · source_id"];
+  embed [label="6. 임베딩\ntext-embedding-3-small\n1,536 dimensions", fillcolor="#E8F4FB", color="#8CB8D8"];
+  validate [label="7. 적재 전 검증\nUUID · FK · 벡터 차원\n메타데이터 · safety_tags"];
+
+  subgraph cluster_supabase {
+    label="Supabase 적재";
+    color="#70B996";
+    style="rounded,filled";
+    fillcolor="#F6FCF8";
+    source_table [label="rag_sources\n출처·제목·URL·발행기관"];
+    chunk_table [label="rag_chunks\n본문·메타데이터·embedding"];
+    psis_table [label="psis_pesticide_chunks\n농약 안전 참고", fillcolor="#FFF4CF", color="#D2B76B"];
+    catalog_table [label="plant_catalog\n한글명·학명·aliases"];
+    { rank=same; source_table; chunk_table; psis_table; catalog_table; }
+  }
+
+  retrieval [label="Backend 검색\nVector RPC + Keyword + RRF\n작물 게이트 · 농약 가드", fillcolor="#C3EFDA"];
+
+  official -> collect;
+  docs -> collect;
+  global -> collect [label=" 번역 필요"];
+  collect -> raw -> normalize -> select -> chunk -> embed -> validate;
+  { rank=same; collect; raw; normalize; select; }
+  { rank=same; chunk; embed; validate; }
+  validate -> source_table [label=" Service Role"];
+  validate -> chunk_table [label=" Service Role"];
+  validate -> psis_table [label=" 안전 전용"];
+  validate -> catalog_table [label=" 이름/별칭"];
+  source_table -> retrieval;
+  chunk_table -> retrieval;
+  psis_table -> retrieval;
+  catalog_table -> retrieval;
+}

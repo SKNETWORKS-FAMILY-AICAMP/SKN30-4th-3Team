@@ -1,0 +1,105 @@
+digraph FarmhaniDeployment {
+  graph [
+    rankdir=LR,
+    bgcolor="transparent",
+    pad="0.35",
+    nodesep="0.45",
+    ranksep="0.9",
+    splines=ortho,
+    fontname="Malgun Gothic",
+    fontsize=18,
+    label="Farm하니 v2 전체 배포 구성",
+    labelloc=t,
+    labeljust=l
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Malgun Gothic",
+    fontsize=11,
+    color="#9BCDB8",
+    fillcolor="#F4FBF7",
+    fontcolor="#153C31",
+    margin="0.18,0.12"
+  ];
+  edge [
+    fontname="Malgun Gothic",
+    fontsize=9,
+    color="#4B7F6D",
+    fontcolor="#315D4E",
+    arrowsize=0.75
+  ];
+
+  subgraph cluster_client {
+    label="사용자 환경";
+    color="#C9E7DA";
+    style="rounded,filled";
+    fillcolor="#FBFEFC";
+    user [label="사용자\nPC · 모바일 브라우저 · PWA", fillcolor="#E0F7EB"];
+  }
+
+  subgraph cluster_vercel {
+    label="Vercel";
+    color="#8BCBAF";
+    style="rounded,filled";
+    fillcolor="#F6FCF8";
+    frontend [label="Frontend\nReact 19 · TypeScript · Vite\n정적 번들 · 반응형/PWA", fillcolor="#D8F4E6"];
+    backend [label="Backend\nFastAPI · Pydantic\nAPI Router · LangGraph", fillcolor="#C3EFDA"];
+    frontend -> backend [label=" HTTPS REST / SSE\nAuthorization: Bearer JWT"];
+  }
+
+  subgraph cluster_supabase {
+    label="Supabase";
+    color="#70B996";
+    style="rounded,filled";
+    fillcolor="#F6FCF8";
+    auth [label="Auth\n회원가입 · 로그인 · JWT/JWKS"];
+    db [label="PostgreSQL + RLS\n사용자 · 식물 · 텃밭\n관리 기록 · 상담 이력"];
+    storage [label="Storage\n식물 · 텃밭 · 상담 이미지\nSigned URL"];
+    vector [label="pgvector / RPC\nrag_sources · rag_chunks\nPSIS 농약 청크", fillcolor="#E0F7EB"];
+  }
+
+  subgraph cluster_openai {
+    label="OpenAI API";
+    color="#8CB8D8";
+    style="rounded,filled";
+    fillcolor="#F7FBFE";
+    chat [label="Chat / Vision\nGPT-5.4 · GPT-5.5 · GPT-5.6"];
+    embed [label="Embedding\ntext-embedding-3-small\n1,536 dimensions"];
+  }
+
+  subgraph cluster_runpod {
+    label="RunPod GPU Pod · RTX 4090";
+    color="#D2B76B";
+    style="rounded,filled";
+    fillcolor="#FFFDF6";
+    proxy [label="OpenAI 호환 보안 프록시\nHTTPS · Bearer Token · :8000", fillcolor="#FFF4CF"];
+    ollama [label="Ollama API\n127.0.0.1:11434"];
+    qwen [label="Qwen3-VL 4B Instruct\n텍스트 · 이미지", fillcolor="#FFF0BD"];
+    proxy -> ollama [label=" 내부 HTTP"];
+    ollama -> qwen [label=" 모델 실행"];
+  }
+
+  subgraph cluster_data {
+    label="데이터 파이프라인";
+    color="#B8B8D8";
+    style="rounded,filled";
+    fillcolor="#FBFAFE";
+    sources [label="공식·공공·검수 출처\n농사로 · NCPMS · PSIS · AI Hub\n국립수목원/KPNI · 선별 해외자료"];
+    pipeline [label="수집 → 번역/정규화 → 검증\n청킹 → 임베딩 → 적재", fillcolor="#EEEAFB"];
+    sources -> pipeline [label=" API · CSV · HWPX · JSONL"];
+  }
+
+  user -> frontend [label=" HTTPS\n화면 · 정적 자산"];
+  frontend -> auth [label=" Auth REST"];
+  backend -> auth [label=" JWT/JWKS 검증"];
+  backend -> db [label=" CRUD · 소유권 검증"];
+  backend -> storage [label=" 업로드 · Signed URL"];
+  backend -> vector [label=" Vector RPC · Keyword Search"];
+  backend -> chat [label=" 선택 모델 · Vision", color="#3E7CB1"];
+  backend -> embed [label=" 검색 질의 임베딩", color="#3E7CB1"];
+  backend -> proxy [label=" Local 선택 또는 Fallback\n/v1/chat/completions", style=dashed, color="#B58418"];
+  pipeline -> embed [label=" 배치 임베딩", color="#6A6A9F"];
+  pipeline -> vector [label=" Service Role 적재", color="#6A6A9F"];
+  pipeline -> db [label=" 식물 카탈로그/별칭 적재", color="#6A6A9F"];
+}

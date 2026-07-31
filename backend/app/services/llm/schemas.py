@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -31,6 +32,10 @@ class QueryExpansion(BaseModel):
 
 class RerankDecision(BaseModel):
     relevant: list[int] = Field(default_factory=list)
+
+
+class QuestionScopeDecision(BaseModel):
+    scope: Literal["plant_care", "smalltalk", "out_of_scope"]
 
 
 class GeneratedAnswer(BaseModel):

@@ -9,6 +9,10 @@ from app.services.llm import chat_completion
 from app.services.llm.schemas import GeneratedAnswer, parse_json_object
 from app.services.rag.common import (
     AgentState,
+    QUESTION_SCOPE_OUT_OF_SCOPE,
+    QUESTION_SCOPE_SMALLTALK,
+    QUESTION_SCOPE_UNDETERMINED,
+    classify_question_scope,
     document_safety_tags,
     extract_user_name,
     is_smalltalk_question,
@@ -132,11 +136,30 @@ def _no_evidence_result(*, plant_label: str, companion_mode: bool) -> Dict[str, 
     }
 
 
+def _out_of_scope_result(*, companion_mode: bool) -> Dict[str, Any]:
+    """검색과 LLM 호출 없이 식물 상담 범위 밖 질문을 안내한다."""
+    if companion_mode:
+        summary = "그 질문은 식물·텃밭 관리 상담 범위를 벗어나고, 관련 공식 검색 근거 문서도 0건이라 여기서는 답하기 어려워. 내 잎, 흙, 물주기나 빛 상태가 궁금하면 물어봐 줘!"
+    else:
+        summary = "해당 질문은 식물·텃밭 관리 상담 범위를 벗어나며, 이 질문에 사용할 수 있는 공식 검색 근거 문서는 0건입니다. 따라서 답변하기 어렵습니다. 식물의 물주기, 빛, 흙, 생육 상태 또는 병해충에 관해 질문해 주세요."
+    return {
+        "draft_answer": {
+            "summary": summary,
+            "possibleCauses": [],
+            "todayActions": [],
+            "observationChecklist": [],
+            "citations": [],
+        },
+        "generation_notice": "식물·텃밭 관리와 무관한 질문이어서 공식 문서 검색을 실행하지 않았으며 출처는 0건입니다.",
+    }
+
+
 # 7. generate_answer 노드
 def generate_answer(state: AgentState) -> Dict[str, Any]:
     openai_key = os.getenv("OPENAI_API_KEY") or settings.OPENAI_API_KEY
     docs = state["retrieved_docs"]
     question = state["question"]
+    question_scope = state.get("question_scope") or classify_question_scope(question)
     context = state["user_context"]
     image_description = state.get("image_description") or "사진 분석 결과 없음"
     vision_error = state.get("vision_error")
@@ -154,6 +177,9 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
     )
     remembered_name = recall_user_name(question, chat_history)
     generation_notice = None
+
+    if question_scope in {QUESTION_SCOPE_OUT_OF_SCOPE, QUESTION_SCOPE_UNDETERMINED}:
+        return _out_of_scope_result(companion_mode=is_companion_mode)
 
     if extract_user_name(question):
         if is_companion_mode:
@@ -183,7 +209,7 @@ def generate_answer(state: AgentState) -> Dict[str, Any]:
         }
         return {"draft_answer": _with_companion_ending(draft, plant_label) if is_companion_mode else draft}
     
-    if is_smalltalk_question(question):
+    if question_scope == QUESTION_SCOPE_SMALLTALK or is_smalltalk_question(question):
         if is_companion_mode:
             persona_status = plant_persona_status(plant, state.get("care_logs") or [])
             draft = {
@@ -456,6 +482,16 @@ OFF_TOPIC_PESTICIDE_NOTICE = (
     "실제 살포는 제품 라벨의 적용 작물·안전사용기준 확인과 전문가 상담을 거치십시오."
 )
 ACTION_SAFETY_KEYWORDS = ("농약", "살충", "살균", "약제")
+OUT_OF_SCOPE_REFUSAL_MARKERS = (
+    "식물 관리와 무관",
+    "식물·텃밭 관리와 무관",
+    "식물 관리와 관련이 없",
+    "식물·텃밭 관리와 관련이 없",
+    "식물 관리 상담 범위를 벗어나",
+    "식물·텃밭 관리 상담 범위를 벗어나",
+    "식물 관리에 대한 질문이 아니",
+    "식물 상담 범위를 벗어나",
+)
 
 
 def collect_document_safety_tags(docs: Any) -> list:
@@ -468,21 +504,39 @@ def collect_document_safety_tags(docs: Any) -> list:
     return tags
 
 
+def is_out_of_scope_refusal(draft: Dict[str, Any]) -> bool:
+    """모델이 범위 밖 질문임을 명시적으로 거절했는지 확인한다."""
+    text = " ".join(
+        [
+            str(draft.get("summary") or ""),
+            *[str(item) for item in draft.get("possibleCauses") or []],
+            *[str(item) for item in draft.get("todayActions") or []],
+        ]
+    )
+    return any(marker in text for marker in OUT_OF_SCOPE_REFUSAL_MARKERS)
+
+
 # 8. safety_review 노드
 def safety_review(state: AgentState) -> Dict[str, Any]:
     draft = state["draft_answer"]
     response_mode = state.get("response_mode") or "expert"
+    question_scope = state.get("question_scope") or classify_question_scope(state.get("question") or "")
+    out_of_scope = question_scope in {QUESTION_SCOPE_OUT_OF_SCOPE, QUESTION_SCOPE_UNDETERMINED}
+    refusal_detected = is_out_of_scope_refusal(draft)
+    suppress_sources = out_of_scope or refusal_detected
 
-    if response_mode == "companion":
+    if suppress_sources:
+        safety_notice = "식물·텃밭 관리 상담 범위를 벗어난 질문으로 공식 문서 검색을 실행하지 않았으며 출처는 0건입니다."
+    elif response_mode == "companion":
         safety_notice = "친근한 대화 모드의 답변이지만, 실제 관리는 입력된 내용과 공식 지침서에 기반한 참고 가이드입니다. 증상이 지속되면 전문가 확인을 권장합니다."
     else:
         safety_notice = "본 관리 가이드는 입력된 내용 및 공식 지침서에 기반하여 생성되었으며 특정 질병을 확정하는 것이 아닙니다. 상세 증상이 지속되면 농업기술센터 전문가의 도움을 받으십시오."
 
-    if state.get("generation_notice"):
+    if state.get("generation_notice") and not suppress_sources:
         safety_notice = f"{state['generation_notice']} {safety_notice}"
 
     # 답변 문구가 아니라 검색된 근거 문서의 태그를 기준으로 고지를 결정한다.
-    document_safety_tags = collect_document_safety_tags(state.get("retrieved_docs"))
+    document_safety_tags = collect_document_safety_tags([] if suppress_sources else state.get("retrieved_docs"))
     if "pesticide_caution" in document_safety_tags:
         safety_notice = f"{safety_notice} {PESTICIDE_CAUTION_NOTICE}"
     elif "label_check_required" in document_safety_tags:
@@ -490,7 +544,7 @@ def safety_review(state: AgentState) -> Dict[str, Any]:
 
     # 농약 무관 질문이라 농약 문서를 근거에서 뺐다면 그 사실을 알린다.
     # 이 시점의 retrieved_docs에는 농약 문서가 없으므로 위 고지와 겹치지 않는다.
-    if state.get("pesticide_docs_filtered"):
+    if state.get("pesticide_docs_filtered") and not suppress_sources:
         safety_notice = f"{safety_notice} {OFF_TOPIC_PESTICIDE_NOTICE}"
 
     today_actions = []
@@ -505,7 +559,9 @@ def safety_review(state: AgentState) -> Dict[str, Any]:
         "possibleCauses": draft["possibleCauses"],
         "todayActions": today_actions,
         "observationChecklist": draft["observationChecklist"],
-        "citations": draft["citations"],
+        # 이전 단계의 결함이나 오래된 상태가 섞이더라도 범위 밖 응답에는 출처를
+        # 절대 노출하지 않는 최종 방어선이다.
+        "citations": [] if suppress_sources else draft["citations"],
         "safetyNotice": safety_notice
     }
     return {"final_answer": final_answer}
