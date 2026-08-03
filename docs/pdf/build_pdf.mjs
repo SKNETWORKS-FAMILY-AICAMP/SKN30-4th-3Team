@@ -59,7 +59,7 @@ const baseCss = `
   th, td { border: 1px solid #d5e2df; padding: 5px 8px; text-align: left; vertical-align: top; line-height: 1.45; }
   th { background: #e2f2ed; color: #0a5038; font-weight: 700; }
   tbody tr:nth-child(even) td { background: #f6fbfa; }
-  img { max-width: 100%; height: auto; display: block; margin: 12px auto; break-inside: avoid; }
+  img { max-width: 100%; max-height: 142mm; height: auto; width: auto; display: block; margin: 12px auto; break-inside: avoid; }
   em { color: #5b6b70; font-style: italic; }
   blockquote { margin: 11px 0; padding: 9px 15px; border-left: 4px solid #12b5a0; background: #f2f9f8;
     color: #45585d; break-inside: avoid; }
@@ -93,6 +93,8 @@ const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new'
 for (const d of DOCLIST) {
   const raw = fs.readFileSync(path.join(DOCS, d.file), 'utf8');
   let body = md.render(raw);
+  // h2 대단원 제목 바로 뒤에 붙은 중복 페이지나눔 div 제거 (제목만 남는 빈 페이지 방지)
+  body = body.replace(/(<\/h2>\s*)<div[^>]*page-break-before[^>]*>\s*<\/div>/gi, '$1');
   if (!d.h2break) body = insertCoverBreak(body);
   const tmp = path.join(DOCS, '.__pdfbuild_' + d.file.replace(/\.md$/, '') + '.html');
   fs.writeFileSync(tmp, tpl(d.name, body, d.h2break), 'utf8');
