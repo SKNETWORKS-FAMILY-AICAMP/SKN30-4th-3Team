@@ -27,6 +27,7 @@ const CHROME = BROWSERS.find((p) => fs.existsSync(p));
 if (!CHROME) { console.error('Chrome/Edge를 찾을 수 없습니다. CHROME_PATH 환경변수로 지정하세요.'); process.exit(1); }
 
 const DOCLIST = [
+  { file: 'Farm하니_v2_애플리케이션_소개서.md',     name: 'Farm하니 v2 애플리케이션 소개서',     h2break: true  },
   { file: 'Farm하니_v2_요구사항_정의서.md',        name: 'Farm하니 v2 요구사항 정의서',        h2break: true  },
   { file: 'Farm하니_v2_화면설계서.md',             name: 'Farm하니 v2 화면설계서',             h2break: false },
   { file: 'Farm하니_v2_시스템_구성도.md',           name: 'Farm하니 v2 시스템 구성도',           h2break: false },
