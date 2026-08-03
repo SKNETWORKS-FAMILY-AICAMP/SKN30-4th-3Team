@@ -13,6 +13,7 @@ from all_ncpms_common import (
     extract_records,
     find_first,
     now_iso,
+    normalize_name,
     progress,
     read_jsonl,
     remove_image_fields,
@@ -51,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         "--no-discovery",
         action="store_true",
         help="Search only names from plant_codes.jsonl; do not enqueue response crop names.",
+    )
+    parser.add_argument(
+        "--exact-name-only",
+        action="store_true",
+        help="Keep only rows whose NCPMS cropName exactly matches the query name.",
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--include-images", action="store_true")
@@ -120,6 +126,11 @@ def main() -> int:
         for plant in catalog_plants
         if str(plant.get("crop_code") or "").strip()
     }
+    plants_by_name = {
+        normalize_name(plant.get("crop_name")): plant
+        for plant in catalog_plants
+        if normalize_name(plant.get("crop_name"))
+    }
     pending_names: deque[str] = deque()
     queued_names: set[str] = set()
     for plant in plants:
@@ -174,6 +185,11 @@ def main() -> int:
             disease_name = find_first(row, "sickNameKor", "disease_name")
             source_crop_code = find_first(row, "cropCode", "crop_code")
             source_crop_name = find_first(row, "cropName")
+            if (
+                args.exact_name_only
+                and normalize_name(source_crop_name) != normalize_name(query_crop_name)
+            ):
+                continue
             if not sick_key:
                 continue
             if (
@@ -196,6 +212,10 @@ def main() -> int:
                 }
             )
             target_plant = plants_by_code.get(source_crop_code)
+            matched_by_query_name = False
+            if not target_plant and args.exact_name_only:
+                target_plant = plants_by_name.get(normalize_name(query_crop_name))
+                matched_by_query_name = target_plant is not None
             relation = {
                 "plant_key": (
                     target_plant.get("plant_key")
@@ -213,7 +233,9 @@ def main() -> int:
                 "sick_key": sick_key,
                 "disease_name_ko": disease_name or None,
                 "match_method": (
-                    "ncpms_response_crop_code"
+                    "exact_query_crop_name"
+                    if matched_by_query_name
+                    else "ncpms_response_crop_code"
                     if target_plant
                     else "response_crop_code_missing"
                     if not source_crop_code

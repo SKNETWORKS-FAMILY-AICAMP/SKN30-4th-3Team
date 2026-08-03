@@ -1,0 +1,13 @@
+{
+  "verified": {
+    "갯기름 나물(식방풍)": "갯기름나물",
+    "봉숭아": "봉선화",
+    "앵두": "앵도나무"
+  },
+  "needs_review": {
+    "샐비어": {
+      "searched_term": "깨꽃",
+      "condition": "원본 식물이 Salvia splendens인 경우에만 사용"
+    }
+  }
+}
